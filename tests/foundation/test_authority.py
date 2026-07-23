@@ -17,6 +17,18 @@ class AuthorityPolicyTests(unittest.TestCase):
 
     def test_canonical_manifest_passes(self) -> None:
         self.assertEqual((), validate_manifest(self.manifest, ROOT))
+        implementer = next(role for role in self.manifest["roles"] if role["id"] == "implementer")
+        self.assertIn("contracts/acceptance", implementer["write_paths"])
+        self.assertIn("schemas/acceptance-contract.schema.json", implementer["write_paths"])
+        self.assertIn("schemas/protected-change-authorization.schema.json", implementer["write_paths"])
+        for path in (
+            "contracts/acceptance",
+            "schemas/acceptance-contract.schema.json",
+            "schemas/protected-change-authorization.schema.json",
+            "src/mojoattention/validation/acceptance.py",
+            "src/mojoattention/validation/paths.py",
+        ):
+            self.assertIn(path, self.manifest["protected_paths"])
 
     def test_unknown_field_and_missing_role_fail(self) -> None:
         invalid = deepcopy(self.manifest)
@@ -82,7 +94,7 @@ class AuthorityPolicyTests(unittest.TestCase):
         self.assertEqual("AUTH-009", denied.code if denied else "")
 
     def test_operation_paths_fail_closed(self) -> None:
-        for path in ("src/../tests/pwn.py", "/src/pwn.py", "src\\pwn.py"):
+        for path in ("src/../tests/pwn.py", "/src/pwn.py", "src\\pwn.py", "src//pwn.py", "src/./pwn.py"):
             denied = authorize_write(self.manifest, "implementer", "modify", path, ("src",), root=ROOT)
             self.assertEqual("AUTH-003", denied.code if denied else "", path)
         for operation in ("rename", "copy"):

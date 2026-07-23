@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/mojoattention/acceptance-contract.schema.json",
+  "title": "MojoAttention Acceptance Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "contract_id",
+    "contract_version",
+    "source_revision",
+    "trusted_base_revision",
+    "contract_digest",
+    "requirement_ids",
+    "capability_ids",
+    "exclusions",
+    "allowed_paths",
+    "protected_paths",
+    "generated_outputs",
+    "required_suites",
+    "referenced_digests",
+    "retry_budget",
+    "prior_validation_identity",
+    "stop_conditions",
+    "authorization_id"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "contract_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "contract_version": {"type": "integer", "minimum": 1},
+    "source_revision": {"$ref": "#/$defs/revision"},
+    "trusted_base_revision": {"$ref": "#/$defs/revision"},
+    "contract_digest": {"$ref": "#/$defs/digest"},
+    "requirement_ids": {"$ref": "#/$defs/ids"},
+    "capability_ids": {"$ref": "#/$defs/ids"},
+    "exclusions": {"$ref": "#/$defs/ids"},
+    "allowed_paths": {"$ref": "#/$defs/nonempty_paths"},
+    "protected_paths": {"$ref": "#/$defs/paths"},
+    "generated_outputs": {"$ref": "#/$defs/paths"},
+    "required_suites": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/suite"}
+    },
+    "referenced_digests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tolerance", "baseline", "workload", "protocol"],
+      "properties": {
+        "tolerance": {"$ref": "#/$defs/nullable_digest"},
+        "baseline": {"$ref": "#/$defs/nullable_digest"},
+        "workload": {"$ref": "#/$defs/nullable_digest"},
+        "protocol": {"$ref": "#/$defs/nullable_digest"}
+      }
+    },
+    "retry_budget": {"type": "integer", "minimum": 0, "maximum": 5},
+    "prior_validation_identity": {
+      "type": ["string", "null"],
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "stop_conditions": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "scope-expansion",
+          "validation-weakening",
+          "protected-conflict",
+          "non-improving-retry",
+          "nondeterminism"
+        ]
+      }
+    },
+    "authorization_id": {
+      "type": ["string", "null"],
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    }
+  },
+  "$defs": {
+    "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "nullable_digest": {
+      "anyOf": [
+        {"$ref": "#/$defs/digest"},
+        {"type": "null"}
+      ]
+    },
+    "ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[A-Za-z0-9]+(?:[-.][A-Za-z0-9]+)*$"}
+    },
+    "paths": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "nonempty_paths": {
+      "allOf": [
+        {"$ref": "#/$defs/paths"},
+        {"minItems": 1}
+      ]
+    },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suite_id", "validations"],
+      "properties": {
+        "suite_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "validations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/validation"}
+        },
+        "required_total": {"type": "integer", "minimum": 1}
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validation_id", "required_count"],
+      "properties": {
+        "validation_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9]*-[0-9]{3}$"},
+        "required_count": {"type": "integer", "minimum": 1}
+      }
+    }
+  }
+}

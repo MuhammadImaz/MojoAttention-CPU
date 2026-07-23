@@ -9,9 +9,10 @@ import tempfile
 from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from mojoattention.config import ProjectPolicy
+from mojoattention.validation.acceptance import ContractContext, ContractError, validate_contract
 from mojoattention.validation.authority import validate_manifest
 from mojoattention.validation.host import probe
 from mojoattention.validation.identity import detect_identity, evaluate_identity
@@ -35,8 +36,15 @@ def _is_project_root(path: Path) -> bool:
 
 def _root() -> Path:
     configured = os.environ.get("MOJOATTENTION_PROJECT_ROOT")
-    candidates = [Path(configured)] if configured else []
-    candidates.extend([Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve().parents])
+    if configured:
+        try:
+            resolved = Path(configured).resolve()
+        except (OSError, RuntimeError) as error:
+            raise RuntimeError("configured project root cannot be resolved") from error
+        if _is_project_root(resolved):
+            return resolved
+        raise RuntimeError("configured project root is not a valid checkout")
+    candidates = [Path.cwd(), *Path.cwd().parents, *Path(__file__).resolve().parents]
     for candidate in candidates:
         resolved = candidate.resolve()
         if _is_project_root(resolved):
@@ -67,6 +75,10 @@ def _write_payload(payload: str, destination: str) -> bool:
         return False
 
 
+def _read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = ProjectArgumentParser(prog="mojoattention")
     commands = parser.add_subparsers(dest="command", required=True, parser_class=ProjectArgumentParser)
@@ -79,11 +91,106 @@ def build_parser() -> argparse.ArgumentParser:
     privacy.add_argument("--json", dest="json_path", default="-", metavar="PATH")
     authority = commands.add_parser("authority")
     authority.add_argument("--json", dest="json_path", default="-", metavar="PATH")
+    contract = commands.add_parser("contract")
+    contract_commands = contract.add_subparsers(
+        dest="contract_command",
+        required=True,
+        parser_class=ProjectArgumentParser,
+    )
+    contract_validate = contract_commands.add_parser("validate")
+    contract_validate.add_argument("--contract", dest="contract_path", required=True, metavar="PATH")
+    contract_validate.add_argument("--source-revision", required=True, metavar="SHA")
+    contract_validate.add_argument("--trusted-base-revision", required=True, metavar="SHA")
+    contract_validate.add_argument("--prior-validation-identity", default=None, metavar="ID")
+    contract_validate.add_argument("--authorization", dest="authorization_path", metavar="PATH")
+    contract_validate.add_argument("--approval-anchor-revision", metavar="SHA")
+    contract_validate.add_argument("--json", dest="json_path", default="-", metavar="PATH")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "contract":
+        errors: tuple[ContractError, ...]
+        try:
+            root = _root()
+        except (OSError, RuntimeError) as input_error:
+            errors = (ContractError("ACPT-009", "project root is unavailable", {"error": str(input_error)}),)
+        else:
+            try:
+                contract_path = Path(args.contract_path)
+                if not contract_path.is_absolute():
+                    contract_path = root / contract_path
+                contract = _read_json(contract_path)
+            except (OSError, json.JSONDecodeError, TypeError) as input_error:
+                errors = (ContractError("ACPT-009", "contract input cannot be read", {"error": str(input_error)}),)
+            else:
+                authorization: Any = None
+                authorization_error: ContractError | None = None
+                if args.authorization_path is None and args.approval_anchor_revision is not None:
+                    authorization_error = ContractError(
+                        "ACPT-008",
+                        "approval anchor requires an authorization envelope",
+                        {},
+                    )
+                elif args.authorization_path is not None and args.approval_anchor_revision is None:
+                    authorization_error = ContractError(
+                        "ACPT-008",
+                        "authorization requires an independently supplied approval anchor",
+                        {},
+                    )
+                elif args.authorization_path is not None:
+                    try:
+                        authorization_path = Path(args.authorization_path).resolve()
+                    except (OSError, RuntimeError) as input_error:
+                        authorization_error = ContractError(
+                            "ACPT-008",
+                            "authorization path cannot be resolved",
+                            {"error": str(input_error)},
+                        )
+                    else:
+                        if authorization_path.is_relative_to(root.resolve()):
+                            authorization_error = ContractError(
+                                "ACPT-008",
+                                "authorization must be anchored outside the proposed repository",
+                                {"path": str(authorization_path)},
+                            )
+                        else:
+                            try:
+                                authorization = _read_json(authorization_path)
+                            except (OSError, json.JSONDecodeError, TypeError) as input_error:
+                                authorization_error = ContractError(
+                                    "ACPT-008",
+                                    "authorization input cannot be read",
+                                    {"error": str(input_error)},
+                                )
+                if authorization_error is not None:
+                    errors = (authorization_error,)
+                else:
+                    context = ContractContext(
+                        source_revision=args.source_revision,
+                        trusted_base_revision=args.trusted_base_revision,
+                        prior_validation_identity=args.prior_validation_identity,
+                        approval_anchor_revision=args.approval_anchor_revision,
+                        authorization=authorization,
+                    )
+                    errors = validate_contract(contract, root, context)
+        payload = (
+            json.dumps(
+                {"errors": [asdict(error) for error in errors], "verdict": "contract-invalid" if errors else "pass"},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        if not _write_payload(payload, args.json_path):
+            return 3
+        for contract_error in errors:
+            print(
+                f"{contract_error.code} contract-invalid: {contract_error.message}; context={contract_error.context}",
+                file=sys.stderr,
+            )
+        return 3 if errors else 0
     if args.command in {"privacy", "authority"}:
         try:
             root = _root()

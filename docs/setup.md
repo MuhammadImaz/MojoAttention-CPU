@@ -34,6 +34,20 @@ scripts/run.sh max --version
 scripts/run.sh mojo --version
 ```
 
+Validate the canonical Acceptance Contract with explicit trusted context:
+
+```bash
+scripts/run.sh mojoattention contract validate \
+  --contract contracts/acceptance/1-3.example.json \
+  --source-revision 1111111111111111111111111111111111111111 \
+  --trusted-base-revision 2222222222222222222222222222222222222222 \
+  --json -
+```
+
+The example returns `pass`. A deterministic digest failure can be demonstrated safely by copying the example outside the repository, changing any bound field without reissuing its digest, and validating the copy with the same command. It returns exit 3 with `ACPT-003`. Missing, unreadable, or malformed input returns `ACPT-009`; invalid contract shape returns `ACPT-001`.
+
+Contracts that name protected paths additionally require both `--authorization <file>` and an independently obtained `--approval-anchor-revision <sha>`. The authorization file must be outside the proposed repository and bind that human approval anchor, the exact contract digest, source/trusted-base revisions, and exact protected paths. This is contract feedback, not proof that the supplied approval came from trusted state; Story 1.4 owns that enforcement.
+
 Baseline requires Linux x86-64, glibc 2.34+, effective x86-64-v3, 8 GiB total RAM, and four logical CPUs. Broad mode additionally requires 4 GiB available RAM, 15 GiB free disk, no active/unsealed run, and project Modular cache below 80% of its 5,000,000,000-byte budget. It warns at 70%. Filesystem capacity and project-cache budget are independent gates.
 
 Exit 0 is pass (warnings included), 2 is `infrastructure-invalid`, 3 is `contract-invalid`, and 64 is invalid CLI usage. JSON goes only to `--json`; diagnostics go to stderr. A successful live broad check reports `pass`. Deterministic warning/failure examples can be exercised safely without filling the disk:

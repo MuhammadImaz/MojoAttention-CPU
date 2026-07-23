@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0.0",
+  "contract_id": "story-1-3",
+  "contract_version": 1,
+  "source_revision": "1111111111111111111111111111111111111111",
+  "trusted_base_revision": "2222222222222222222222222222222222222222",
+  "contract_digest": "sha256:d6e8d776a1f3d294be068e8a3af5f87fce40aacfc9120fbdb9347523629b3b2e",
+  "requirement_ids": ["FR2", "NFR3", "NFR11"],
+  "capability_ids": ["CAP-2"],
+  "exclusions": ["reference-backend", "mojo-kernel"],
+  "allowed_paths": ["src/mojoattention/validation", "tests/foundation"],
+  "protected_paths": [],
+  "generated_outputs": [],
+  "required_suites": [
+    {
+      "suite_id": "foundation",
+      "validations": [
+        {"validation_id": "ACPT-001", "required_count": 1},
+        {"validation_id": "ACPT-003", "required_count": 1}
+      ],
+      "required_total": 2
+    }
+  ],
+  "referenced_digests": {
+    "tolerance": null,
+    "baseline": null,
+    "workload": null,
+    "protocol": null
+  },
+  "retry_budget": 5,
+  "prior_validation_identity": null,
+  "stop_conditions": [
+    "scope-expansion",
+    "validation-weakening",
+    "protected-conflict",
+    "non-improving-retry",
+    "nondeterminism"
+  ],
+  "authorization_id": null
+}

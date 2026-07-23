@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
+
+from mojoattention.validation.paths import contains, is_canonical_repo_path
 
 REQUIRED_ROLES = frozenset(
     {
@@ -31,41 +33,11 @@ class AuthorityError:
 
 
 def _canonical_scope(scope: str, root: Path) -> bool:
-    pure = PurePosixPath(scope)
-    if not scope or scope.startswith("/") or "\\" in scope or ".." in pure.parts or scope.endswith("/"):
-        return False
-    candidate = root / scope
-    try:
-        current = root
-        for part in pure.parts:
-            current /= part
-            if current.is_symlink():
-                return False
-        return candidate.exists() and candidate.resolve().is_relative_to(root.resolve())
-    except OSError:
-        return False
+    return is_canonical_repo_path(scope, root, require_exists=True)
 
 
 def _canonical_target(path: str, root: Path) -> bool:
-    pure = PurePosixPath(path)
-    if not path or path.startswith("/") or "\\" in path or any(part in {"", ".", ".."} for part in pure.parts):
-        return False
-    current = root
-    try:
-        for part in pure.parts:
-            current /= part
-            if current.is_symlink():
-                return False
-            if not current.exists():
-                break
-        return current.resolve(strict=False).is_relative_to(root.resolve())
-    except OSError:
-        return False
-
-
-def _contains(scope: str, path: str) -> bool:
-    scope_path, candidate = PurePosixPath(scope), PurePosixPath(path)
-    return candidate == scope_path or scope_path in candidate.parents
+    return is_canonical_repo_path(path, root, require_exists=False)
 
 
 def validate_manifest(manifest: Any, root: Path) -> tuple[AuthorityError, ...]:
@@ -103,7 +75,7 @@ def validate_manifest(manifest: Any, root: Path) -> tuple[AuthorityError, ...]:
     ]
     for index, (left_role, left_scope) in enumerate(writers):
         for right_role, right_scope in writers[index + 1 :]:
-            if left_role != right_role and (_contains(left_scope, right_scope) or _contains(right_scope, left_scope)):
+            if left_role != right_role and (contains(left_scope, right_scope) or contains(right_scope, left_scope)):
                 errors.append(
                     AuthorityError("AUTH-005", f"writer scopes overlap: {left_role} and {right_role}", left_scope)
                 )
@@ -137,11 +109,11 @@ def authorize_write(
     for target in targets:
         if not _canonical_target(target, root):
             return AuthorityError("AUTH-003", "operation path is noncanonical or unsafe", target)
-        if any(_contains(scope, target) for scope in manifest["protected_paths"]):
+        if any(contains(scope, target) for scope in manifest["protected_paths"]):
             return AuthorityError("AUTH-009", "protected policy change requires human authorization", target)
-        if not any(_contains(scope, target) for scope in role_scopes):
+        if not any(contains(scope, target) for scope in role_scopes):
             return AuthorityError("AUTH-007", "path is outside role authority", target)
-        if not any(_contains(scope, target) for scope in contracted_paths):
+        if not any(contains(scope, target) for scope in contracted_paths):
             return AuthorityError("AUTH-008", "path is outside contracted authority", target)
     return None
 
@@ -152,6 +124,6 @@ def authorize_read(manifest: dict[str, Any], role_id: str, path: str, *, root: P
         return AuthorityError("AUTH-002", "unknown role", role_id)
     if not _canonical_target(path, root):
         return AuthorityError("AUTH-003", "read path is noncanonical or unsafe", path)
-    if not any(_contains(scope, path) for scope in role["read_paths"]):
+    if not any(contains(scope, path) for scope in role["read_paths"]):
         return AuthorityError("AUTH-011", "path is outside role read authority", path)
     return None
