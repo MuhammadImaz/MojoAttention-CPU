@@ -21,11 +21,20 @@ build/
 .cursor/
 .continue/
 .windsurf/
+.gemini/
+.roo/
+.roomodes
+.opencode/
+.cline*
 _bmad/
 _bmad-output/
 AGENTS.md
 CLAUDE.md
+GEMINI.md
 .aider*
+.github/copilot-instructions.md
+.github/instructions/
+.github/prompts/
 
 # Local machine reports are generated evidence, not source.
 reports/preflight*.json

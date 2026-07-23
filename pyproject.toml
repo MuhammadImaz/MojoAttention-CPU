@@ -48,6 +48,7 @@ torch = { index = "pytorch-cpu" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["host_integration: requires the exact local compiler/MAX identity"]
 
 [tool.ruff]
 line-length = 120

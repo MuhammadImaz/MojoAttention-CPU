@@ -7,6 +7,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -48,6 +50,7 @@ class BootstrapTests(unittest.TestCase):
         (root / ".cache" / "modular").mkdir(parents=True)
         return script
 
+    @pytest.mark.host_integration
     def test_check_mode_is_idempotent_and_external_cwd_safe(self) -> None:
         script = ROOT / "scripts" / "bootstrap.sh"
         with tempfile.TemporaryDirectory() as outside:
@@ -57,6 +60,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(0, first.returncode, first.stderr)
         self.assertEqual(first.stdout, second.stdout)
 
+    @pytest.mark.host_integration
     def test_external_project_environment_is_neutralized(self) -> None:
         env = os.environ.copy()
         env["UV_PROJECT_ENVIRONMENT"] = "/tmp/shared-environment"

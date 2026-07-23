@@ -41,10 +41,10 @@ class ProjectConfigTests(unittest.TestCase):
             self.assertTrue(artifacts, package["name"])
             self.assertTrue(all(item.get("hash", "").startswith("sha256:") for item in artifacts), package["name"])
 
-    def test_story_seed_does_not_create_deferred_agent_or_ci_assets(self) -> None:
+    def test_private_agent_assets_remain_absent_while_minimal_ci_exists(self) -> None:
         self.assertFalse((ROOT / "AGENTS.md").exists())
         self.assertFalse((ROOT / ".codex" / "config.toml").exists())
-        self.assertFalse((ROOT / ".github" / "workflows").exists())
+        self.assertTrue((ROOT / ".github" / "workflows" / "foundation-quality.yml").is_file())
 
     def test_private_ai_workspace_and_generated_preflight_are_ignored(self) -> None:
         ignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
