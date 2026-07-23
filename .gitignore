@@ -1,0 +1,31 @@
+.venv/
+.tools/
+.cache/modular/
+.cache/uv/
+.cache/uv-tools/
+.cache/xdg-data/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+reports/runs/
+reports/generated/
+dist/
+build/
+
+# Private AI/BMAD workspace state — never publish.
+.agents/
+.codex/
+.claude/
+.cursor/
+.continue/
+.windsurf/
+_bmad/
+_bmad-output/
+AGENTS.md
+CLAUDE.md
+.aider*
+
+# Local machine reports are generated evidence, not source.
+reports/preflight*.json

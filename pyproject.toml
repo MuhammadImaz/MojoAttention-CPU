@@ -1,0 +1,63 @@
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mojoattention"]
+
+[project]
+name = "mojoattention-cpu"
+version = "0.1.0"
+description = "Evidence-driven CPU causal attention in PyTorch and Mojo"
+readme = "README.md"
+requires-python = "==3.14.4"
+dependencies = [
+  "jsonschema==4.25.1",
+  "modular==26.4.0",
+  "numpy==2.5.1",
+  "torch==2.13.0+cpu",
+]
+
+[project.scripts]
+mojoattention = "mojoattention.cli.main:main"
+
+[dependency-groups]
+dev = ["mypy==2.3.0", "pytest==9.1.1", "ruff==0.15.22"]
+
+[tool.uv]
+prerelease = "allow"
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
+name = "modular-stable"
+url = "https://modular.gateway.scarf.sh/simple/"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+modular = { index = "modular-stable" }
+torch = { index = "pytorch-cpu" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+exclude = [".agents", "_bmad", "_bmad-output"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+packages = ["mojoattention"]
