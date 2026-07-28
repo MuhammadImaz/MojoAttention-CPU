@@ -18,9 +18,12 @@ class AuthorityPolicyTests(unittest.TestCase):
     def test_canonical_manifest_passes(self) -> None:
         self.assertEqual((), validate_manifest(self.manifest, ROOT))
         implementer = next(role for role in self.manifest["roles"] if role["id"] == "implementer")
+        evidence_producer = next(role for role in self.manifest["roles"] if role["id"] == "evidence-producer")
         self.assertIn("contracts/acceptance", implementer["write_paths"])
         self.assertIn("schemas/acceptance-contract.schema.json", implementer["write_paths"])
         self.assertIn("schemas/protected-change-authorization.schema.json", implementer["write_paths"])
+        self.assertEqual([], evidence_producer["write_paths"])
+        self.assertEqual(["reports/runs"], evidence_producer["indirect_output_paths"])
         for path in (
             "contracts/acceptance",
             "schemas/acceptance-contract.schema.json",
@@ -117,7 +120,7 @@ class AuthorityPolicyTests(unittest.TestCase):
         self.assertEqual("AUTH-009", denied.code if denied else "")
         invalid = deepcopy(self.manifest)
         invalid["roles"][3]["indirect_output_paths"] = ["reports"]
-        self.assertEqual((), validate_manifest(invalid, ROOT))
+        self.assertIn("AUTH-005", {error.code for error in validate_manifest(invalid, ROOT)})
         denied = authorize_write(invalid, "implementer", "modify", "reports/result.json", ("reports",), root=ROOT)
         self.assertEqual("AUTH-007", denied.code if denied else "")
         self.assertIsNone(

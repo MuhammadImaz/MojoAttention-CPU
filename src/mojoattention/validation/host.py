@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from mojoattention.validation.evidence import verify_evidence
 from mojoattention.validation.preflight import HostSnapshot, RunState
 
 
@@ -90,15 +91,18 @@ def _run_state(root: Path) -> RunState:
             return RunState.IDLE
         if not runs.is_dir() or runs.is_symlink():
             return RunState.UNSEALED
-        for entry in runs.rglob("*"):
+        for entry in runs.iterdir():
             state = _marker_state(entry.name)
             if state is not None:
                 return state
-            if entry.is_file() and entry.stat().st_size <= 1_000_000:
-                text = entry.read_text(encoding="utf-8", errors="ignore").lower()
-                for candidate in (RunState.ACTIVE, RunState.STAGING, RunState.UNSEALED):
-                    if f'"status":"{candidate.value}"' in text.replace(" ", ""):
-                        return candidate
+            if entry.is_symlink() or not entry.is_dir():
+                return RunState.UNSEALED
+            match = re.fullmatch(r"([0-9a-f]{32})\.complete", entry.name)
+            if match is None:
+                return RunState.UNSEALED
+            verification = verify_evidence(entry, root / "schemas" / "validation-evidence.schema.json")
+            if verification.errors:
+                return RunState.UNSEALED
         return RunState.IDLE
     except OSError:
         return RunState.UNSEALED

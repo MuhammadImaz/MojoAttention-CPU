@@ -17,13 +17,13 @@
     {"category": "codeowners", "paths": [".github/CODEOWNERS"]},
     {"category": "golden-data", "paths": ["fixtures/golden"]},
     {"category": "required-check-policy", "paths": ["contracts/required-checks.json"]},
-    {"category": "generated-outputs", "paths": ["reports/release"]},
+    {"category": "generated-outputs", "paths": ["reports/README.md", "reports/release"]},
     {"category": "reference-oracles", "paths": ["src/mojoattention/backends/pytorch"]},
     {"category": "acceptance-contracts", "paths": ["contracts/acceptance"]},
     {"category": "ownership-metadata", "paths": ["contracts/ownership.json"]},
     {"category": "protected-policy", "paths": ["contracts/protected-assets.json"]},
     {"category": "authorization-controls", "paths": ["src/mojoattention/validation/acceptance.py"]},
-    {"category": "protected-evaluator", "paths": ["src/mojoattention/cli/main.py", "src/mojoattention/validation/protected_assets.py", "src/mojoattention/validation/paths.py", "scripts/run.sh"]}
+    {"category": "protected-evaluator", "paths": ["src/mojoattention/cli/main.py", "src/mojoattention/validation/evidence.py", "src/mojoattention/validation/protected_assets.py", "src/mojoattention/validation/paths.py", "scripts/run.sh"]}
   ],
   "generated_rules": [],
   "remediation": "Obtain external human authorization bound to this exact trusted base, candidate commit, policy blob, change-set digest, and protected path set."

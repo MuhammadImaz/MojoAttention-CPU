@@ -13,15 +13,19 @@ from typing import Any, NoReturn
 
 from mojoattention.config import ProjectPolicy
 from mojoattention.validation.acceptance import ContractContext, ContractError, validate_contract
-from mojoattention.validation.authority import validate_manifest
+from mojoattention.validation.authority import authorize_read, validate_manifest
+from mojoattention.validation.evidence import EXIT_CODES as EVIDENCE_EXIT_CODES
+from mojoattention.validation.evidence import Attachment, EvidenceWriter, canonical_bytes, verify_evidence
 from mojoattention.validation.host import probe
 from mojoattention.validation.identity import detect_identity, evaluate_identity
+from mojoattention.validation.paths import contains
 from mojoattention.validation.preflight import evaluate, render_json
 from mojoattention.validation.privacy import find_forbidden_tracked_paths, tracked_paths
 from mojoattention.validation.protected_assets import (
     AuthorizationContext,
     ProtectedError,
     TrustedPolicyInput,
+    evaluate_and_compose_trusted_context,
     evaluate_protected_changes,
     inspect_repository_changes,
     load_trusted_authorization,
@@ -142,11 +146,252 @@ def build_parser() -> argparse.ArgumentParser:
     protected_validate.add_argument("--trusted-authorization-schema", metavar="PATH")
     protected_validate.add_argument("--approval-anchor-revision", metavar="SHA")
     protected_validate.add_argument("--json", dest="json_path", default="-", metavar="PATH")
+    evidence = commands.add_parser("evidence")
+    evidence_commands = evidence.add_subparsers(
+        dest="evidence_command", required=True, parser_class=ProjectArgumentParser
+    )
+    for name in ("verify", "inspect"):
+        evidence_read = evidence_commands.add_parser(name)
+        evidence_read.add_argument("--run", required=True, metavar="PATH")
+        evidence_read.add_argument("--json", dest="json_path", default="-", metavar="PATH")
+    evidence_produce = evidence_commands.add_parser("produce")
+    evidence_produce.add_argument("--trusted-request", required=True, metavar="PATH")
+    evidence_produce.add_argument("--trusted-policy", required=True, metavar="PATH")
+    evidence_produce.add_argument("--trusted-policy-schema", required=True, metavar="PATH")
+    evidence_produce.add_argument("--trusted-policy-identity", required=True, metavar="OID")
+    evidence_produce.add_argument("--trusted-policy-digest", required=True, metavar="DIGEST")
+    evidence_produce.add_argument("--trusted-policy-schema-digest", required=True, metavar="DIGEST")
+    evidence_produce.add_argument("--authorization", metavar="PATH")
+    evidence_produce.add_argument("--trusted-authorization-schema", metavar="PATH")
+    evidence_produce.add_argument("--approval-anchor-revision", metavar="SHA")
+    evidence_produce.add_argument("--output", default="reports/runs", metavar="PATH")
+    evidence_produce.add_argument("--json", dest="json_path", default="-", metavar="PATH")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "evidence":
+        if args.evidence_command == "produce":
+            try:
+                root = _root()
+                if args.output != "reports/runs":
+                    raise ValueError("output must be the approved reports/runs root")
+                output = root / "reports" / "runs"
+                if output.is_symlink() or output.parent.is_symlink():
+                    raise ValueError("output root cannot contain symlinks")
+                request_bytes = _read_protected_caller_bytes(root, args.trusted_request)
+                request = json.loads(request_bytes)
+                if not isinstance(request, dict):
+                    raise ValueError("trusted request must be an object")
+                trusted_policy = TrustedPolicyInput(
+                    policy_bytes=_read_protected_caller_bytes(root, args.trusted_policy),
+                    schema_bytes=_read_protected_caller_bytes(root, args.trusted_policy_schema),
+                    identity=args.trusted_policy_identity,
+                    policy_digest=args.trusted_policy_digest,
+                    schema_digest=args.trusted_policy_schema_digest,
+                )
+                production_authorization: AuthorizationContext | None = None
+                authorization_inputs = (
+                    args.authorization,
+                    args.trusted_authorization_schema,
+                    args.approval_anchor_revision,
+                )
+                if any(value is None for value in authorization_inputs) and any(
+                    value is not None for value in authorization_inputs
+                ):
+                    raise ValueError("authorization inputs must be supplied together")
+                if args.authorization is not None:
+                    authorization_bytes = _read_protected_caller_bytes(root, args.authorization)
+                    authorization_schema_bytes = _read_protected_caller_bytes(root, args.trusted_authorization_schema)
+                    envelope, authorization_errors = load_trusted_authorization(
+                        authorization_bytes, authorization_schema_bytes
+                    )
+                    if authorization_errors or envelope is None:
+                        raise ValueError("trusted authorization is invalid")
+                    production_authorization = AuthorizationContext(
+                        envelope=envelope,
+                        approval_anchor_revision=args.approval_anchor_revision,
+                        contract_digest=request["bounded_context"]["contract_digest"],
+                    )
+                trusted_context, protected_eval_errors = evaluate_and_compose_trusted_context(
+                    root,
+                    request["trusted_base_revision"],
+                    request["candidate_revision"],
+                    trusted_policy,
+                    request["bounded_context"]["contract_digest"],
+                    request["bounded_context"],
+                    production_authorization,
+                )
+                if trusted_context is None:
+                    raise ValueError("trusted evaluation inputs could not be acquired")
+                resolved_context = trusted_context.evidence_context()
+                acceptance_contract = request["acceptance_contract"]
+                if acceptance_contract["contract_digest"] != request["bounded_context"]["contract_digest"]:
+                    raise ValueError("acceptance contract digest is not evidence-bound")
+                contract_errors = validate_contract(
+                    acceptance_contract,
+                    root,
+                    ContractContext(
+                        source_revision=resolved_context["source_revision"],
+                        trusted_base_revision=resolved_context["trusted_base_revision"],
+                        prior_validation_identity=None,
+                        approval_anchor_revision=(
+                            production_authorization.approval_anchor_revision
+                            if production_authorization is not None
+                            else None
+                        ),
+                        authorization=(
+                            production_authorization.envelope if production_authorization is not None else None
+                        ),
+                    ),
+                )
+                if contract_errors:
+                    raise ValueError("acceptance contract is invalid")
+                if protected_eval_errors and request["verdict"] != "contract-invalid":
+                    raise ValueError("protected rejection requires contract-invalid evidence")
+                reported_errors = {
+                    canonical_bytes(reported_error)
+                    for validation in request["validations"]
+                    for reported_error in validation["errors"]
+                }
+                trusted_errors = {canonical_bytes(asdict(finding)) for finding in protected_eval_errors}
+                if not trusted_errors.issubset(reported_errors):
+                    raise ValueError("trusted protected rejection is absent from validations")
+                preflight_result = evaluate(probe(root), ProjectPolicy(), "broad")
+                if preflight_result.exit_code != 0:
+                    raise OSError("broad preflight rejected evidence production")
+                writer = EvidenceWriter(output, trusted_context)
+                leaves: list[Attachment] = []
+                authority_manifest = _read_json(root / "contracts" / "agent-authority.json")
+                contracted_roots = tuple(acceptance_contract["allowed_paths"])
+                for descriptor in request["attachments"]:
+                    allowed_roots = tuple(Path(value) for value in descriptor["allowed_roots"])
+                    source_path = Path(descriptor["source"]).resolve(strict=True)
+                    source_relative = source_path.relative_to(root.resolve()).as_posix()
+                    if authorize_read(
+                        authority_manifest,
+                        "evidence-producer",
+                        source_relative,
+                        root=root,
+                    ) is not None or not any(contains(contracted, source_relative) for contracted in contracted_roots):
+                        raise ValueError("attachment source is outside role or contract authority")
+                    for allowed_root in allowed_roots:
+                        allowed_relative = allowed_root.resolve(strict=True).relative_to(root.resolve()).as_posix()
+                        if not any(contains(contracted, allowed_relative) for contracted in contracted_roots):
+                            raise ValueError("attachment root is outside contracted authority")
+                    leaves.append(
+                        writer.snapshot(
+                            Path(descriptor["source"]),
+                            descriptor["path"],
+                            descriptor["media_type"],
+                            allowed_roots,
+                        )
+                    )
+                complete = writer.finalize(
+                    verdict=request["verdict"],
+                    validations=request["validations"],
+                    attachments=leaves,
+                    schema_path=root / "schemas" / "validation-evidence.schema.json",
+                )
+                verified = verify_evidence(complete, root / "schemas" / "validation-evidence.schema.json")
+                if verified.errors or verified.manifest is None:
+                    raise OSError("published evidence failed verification")
+                production_payload: dict[str, Any] = {
+                    "errors": [],
+                    "run": str(complete.relative_to(root)),
+                    "verdict": verified.manifest["verdict"],
+                }
+                exit_code = EVIDENCE_EXIT_CODES[verified.manifest["verdict"]]
+            except KeyError, TypeError, json.JSONDecodeError, ValueError:
+                production_payload = {
+                    "errors": [
+                        {
+                            "code": "EVID-001",
+                            "message": "trusted production request is invalid",
+                            "context": {"phase": "produce"},
+                        }
+                    ],
+                    "non_evidence": True,
+                    "verdict": "contract-invalid",
+                }
+                print(
+                    "EVID-001 contract-invalid: production request rejected; "
+                    "reproduction_argv=['mojoattention','evidence','produce',...]",
+                    file=sys.stderr,
+                )
+                exit_code = EVIDENCE_EXIT_CODES["contract-invalid"]
+            except OSError, RuntimeError:
+                production_payload = {
+                    "errors": [
+                        {
+                            "code": "EVID-004",
+                            "message": "evidence publication failed",
+                            "context": {"phase": "produce"},
+                        }
+                    ],
+                    "non_evidence": True,
+                    "verdict": "infrastructure-invalid",
+                }
+                print(
+                    "EVID-004 infrastructure-invalid: publication failed; "
+                    "reproduction_argv=['mojoattention','evidence','produce',...]",
+                    file=sys.stderr,
+                )
+                exit_code = EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+            if not _write_payload(canonical_bytes(production_payload, newline=True).decode(), args.json_path):
+                return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+            return exit_code
+        try:
+            root = _root()
+            run_path = Path(args.run)
+            if not run_path.is_absolute():
+                run_path = root / run_path
+            evidence_result = verify_evidence(run_path, root / "schemas" / "validation-evidence.schema.json")
+        except OSError, RuntimeError, ValueError:
+            evidence_payload: dict[str, Any] = {
+                "errors": [
+                    {
+                        "code": "EVID-001",
+                        "message": "evidence input is unavailable",
+                        "context": {"phase": "verify"},
+                    }
+                ],
+                "non_evidence": True,
+                "verdict": "contract-invalid",
+            }
+            exit_code = EVIDENCE_EXIT_CODES["contract-invalid"]
+            print(
+                "EVID-001 contract-invalid: evidence input is unavailable; "
+                "reproduction_argv=['mojoattention','evidence','verify','--run',RUN]",
+                file=sys.stderr,
+            )
+        else:
+            if evidence_result.errors:
+                evidence_payload = {
+                    "errors": [asdict(finding) for finding in evidence_result.errors],
+                    "non_evidence": True,
+                    "verdict": "contract-invalid",
+                }
+                exit_code = EVIDENCE_EXIT_CODES["contract-invalid"]
+                for finding in evidence_result.errors:
+                    print(
+                        f"{finding.code} contract-invalid: {finding.message}; "
+                        f"context={finding.context}; "
+                        "reproduction_argv=['mojoattention','evidence','verify','--run',RUN]",
+                        file=sys.stderr,
+                    )
+            else:
+                assert evidence_result.manifest is not None
+                evidence_payload = {
+                    "evidence": evidence_result.manifest,
+                    "errors": [],
+                    "verdict": evidence_result.manifest["verdict"],
+                }
+                exit_code = EVIDENCE_EXIT_CODES[evidence_result.manifest["verdict"]]
+        if not _write_payload(canonical_bytes(evidence_payload, newline=True).decode(), args.json_path):
+            return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+        return exit_code
     if args.command == "protected":
         protected_errors: tuple[ProtectedError, ...]
         try:
