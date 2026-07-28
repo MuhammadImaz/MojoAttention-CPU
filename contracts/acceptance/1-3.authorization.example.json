@@ -1,11 +1,17 @@
 {
-  "schema_version": "1.0.0",
+  "schema_version": "2.0.0",
   "authorization_id": "human-story-1-3",
   "contract_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "source_revision": "1111111111111111111111111111111111111111",
   "trusted_base_revision": "2222222222222222222222222222222222222222",
+  "trusted_base_tree": "5555555555555555555555555555555555555555",
+  "candidate_revision": "6666666666666666666666666666666666666666",
+  "candidate_tree": "7777777777777777777777777777777777777777",
+  "trusted_policy_oid": "8888888888888888888888888888888888888888",
+  "trusted_policy_digest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+  "change_set_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "authorized_protected_paths": ["contracts/agent-authority.json"],
   "approval_anchor_revision": "3333333333333333333333333333333333333333",
   "approver_kind": "human",
-  "provenance_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+  "provenance_digest": "sha256:ba1f8f869a98b2a4902c15b4d2a6d4caa44f4ad2f1ff9cae26fbf5e9fe7c2b0e"
 }

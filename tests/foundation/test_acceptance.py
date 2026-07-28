@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -70,17 +71,29 @@ def valid_contract() -> dict[str, object]:
 
 
 def valid_authorization(contract: dict[str, object]) -> dict[str, object]:
-    return {
-        "schema_version": "1.0.0",
+    authorization = {
+        "schema_version": "2.0.0",
         "authorization_id": "human-story-1-3",
         "contract_digest": contract["contract_digest"],
         "source_revision": SOURCE,
         "trusted_base_revision": BASE,
+        "trusted_base_tree": "5" * 40,
+        "candidate_revision": "6" * 40,
+        "candidate_tree": "7" * 40,
+        "trusted_policy_oid": "8" * 40,
+        "trusted_policy_digest": "sha256:" + ("9" * 64),
+        "change_set_digest": "sha256:" + ("a" * 64),
         "authorized_protected_paths": contract["protected_paths"],
         "approval_anchor_revision": ANCHOR,
         "approver_kind": "human",
         "provenance_digest": "sha256:" + ("4" * 64),
     }
+    payload = dict(authorization)
+    payload.pop("provenance_digest")
+    authorization["provenance_digest"] = (
+        "sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    )
+    return authorization
 
 
 class AcceptanceContractTests(unittest.TestCase):
@@ -350,6 +363,11 @@ class AcceptanceContractTests(unittest.TestCase):
         contract = issue_contract(contract)
         authorization = valid_authorization(contract)
         authorization["authorized_protected_paths"] = list(reversed(authorization["authorized_protected_paths"]))
+        payload = dict(authorization)
+        payload.pop("provenance_digest")
+        authorization["provenance_digest"] = (
+            "sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        )
         self.assertEqual((), validate_contract(contract, ROOT, self.context(authorization=authorization)))
 
     def test_approval_anchor_cannot_self_reference_source_revision(self) -> None:

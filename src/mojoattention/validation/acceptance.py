@@ -49,6 +49,13 @@ def compute_contract_digest(contract: dict[str, object]) -> str:
     return f"sha256:{hashlib.sha256(_canonical_payload(contract)).hexdigest()}"
 
 
+def _compute_authorization_provenance_digest(authorization: dict[str, object]) -> str:
+    payload = deepcopy(authorization)
+    payload.pop("provenance_digest", None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
 def issue_contract(contract: dict[str, object]) -> dict[str, object]:
     issued = deepcopy(contract)
     issued["contract_digest"] = compute_contract_digest(issued)
@@ -176,6 +183,14 @@ def _authorization_errors(
     )
     if schema_errors:
         return schema_errors
+    if authorization.get("provenance_digest") != _compute_authorization_provenance_digest(authorization):
+        return [
+            ContractError(
+                "ACPT-008",
+                "authorization provenance digest does not bind the complete envelope",
+                {"field": "provenance_digest"},
+            )
+        ]
     if context.approval_anchor_revision == contract["source_revision"]:
         return [
             ContractError(
