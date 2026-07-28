@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "protected_categories": [
+    "tests", "schemas", "tolerances", "baselines", "workflows", "dependency-locks",
+    "agent-policy", "codeowners", "golden-data", "required-check-policy", "generated-outputs",
+    "reference-oracles", "acceptance-contracts", "ownership-metadata", "protected-policy",
+    "authorization-controls", "protected-evaluator"
+  ],
+  "protected_scopes": [
+    {"category": "tests", "paths": ["tests"]},
+    {"category": "schemas", "paths": ["schemas"]},
+    {"category": "tolerances", "paths": ["contracts/kernel/tolerances.json"]},
+    {"category": "baselines", "paths": ["contracts/kernel/baselines.json"]},
+    {"category": "workflows", "paths": [".github/workflows"]},
+    {"category": "dependency-locks", "paths": ["uv.lock"]},
+    {"category": "agent-policy", "paths": ["contracts/agent-authority.json"]},
+    {"category": "codeowners", "paths": [".github/CODEOWNERS"]},
+    {"category": "golden-data", "paths": ["fixtures/golden"]},
+    {"category": "required-check-policy", "paths": ["contracts/required-checks.json"]},
+    {"category": "generated-outputs", "paths": ["reports/release"]},
+    {"category": "reference-oracles", "paths": ["src/mojoattention/backends/pytorch"]},
+    {"category": "acceptance-contracts", "paths": ["contracts/acceptance"]},
+    {"category": "ownership-metadata", "paths": ["contracts/ownership.json"]},
+    {"category": "protected-policy", "paths": ["contracts/protected-assets.json"]},
+    {"category": "authorization-controls", "paths": ["src/mojoattention/validation/acceptance.py"]},
+    {"category": "protected-evaluator", "paths": ["src/mojoattention/cli/main.py", "src/mojoattention/validation/protected_assets.py", "src/mojoattention/validation/paths.py", "scripts/run.sh"]}
+  ],
+  "generated_rules": [],
+  "remediation": "Obtain external human authorization bound to this exact trusted base, candidate commit, policy blob, change-set digest, and protected path set."
+}

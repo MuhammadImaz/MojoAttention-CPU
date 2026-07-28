@@ -18,6 +18,14 @@ from mojoattention.validation.host import probe
 from mojoattention.validation.identity import detect_identity, evaluate_identity
 from mojoattention.validation.preflight import evaluate, render_json
 from mojoattention.validation.privacy import find_forbidden_tracked_paths, tracked_paths
+from mojoattention.validation.protected_assets import (
+    AuthorizationContext,
+    ProtectedError,
+    TrustedPolicyInput,
+    evaluate_protected_changes,
+    inspect_repository_changes,
+    load_trusted_authorization,
+)
 
 
 class ProjectArgumentParser(argparse.ArgumentParser):
@@ -79,6 +87,18 @@ def _read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _read_protected_caller_bytes(root: Path, path_value: str) -> bytes:
+    candidate_path = Path(path_value)
+    lexical_path = candidate_path if candidate_path.is_absolute() else Path.cwd() / candidate_path
+    resolved_root = root.resolve()
+    if lexical_path.absolute().is_relative_to(resolved_root):
+        raise OSError("trusted input must be outside the candidate checkout")
+    path = candidate_path.resolve(strict=True)
+    if path.is_relative_to(resolved_root):
+        raise OSError("trusted input must be outside the candidate checkout")
+    return path.read_bytes()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = ProjectArgumentParser(prog="mojoattention")
     commands = parser.add_subparsers(dest="command", required=True, parser_class=ProjectArgumentParser)
@@ -105,11 +125,128 @@ def build_parser() -> argparse.ArgumentParser:
     contract_validate.add_argument("--authorization", dest="authorization_path", metavar="PATH")
     contract_validate.add_argument("--approval-anchor-revision", metavar="SHA")
     contract_validate.add_argument("--json", dest="json_path", default="-", metavar="PATH")
+    protected = commands.add_parser("protected")
+    protected_commands = protected.add_subparsers(
+        dest="protected_command", required=True, parser_class=ProjectArgumentParser
+    )
+    protected_validate = protected_commands.add_parser("validate")
+    protected_validate.add_argument("--trusted-base-revision", required=True, metavar="SHA")
+    protected_validate.add_argument("--candidate-revision", required=True, metavar="SHA")
+    protected_validate.add_argument("--contract-digest", required=True, metavar="DIGEST")
+    protected_validate.add_argument("--trusted-policy", required=True, metavar="PATH")
+    protected_validate.add_argument("--trusted-policy-schema", required=True, metavar="PATH")
+    protected_validate.add_argument("--trusted-policy-identity", required=True, metavar="OID")
+    protected_validate.add_argument("--trusted-policy-digest", required=True, metavar="DIGEST")
+    protected_validate.add_argument("--trusted-policy-schema-digest", required=True, metavar="DIGEST")
+    protected_validate.add_argument("--authorization", metavar="PATH")
+    protected_validate.add_argument("--trusted-authorization-schema", metavar="PATH")
+    protected_validate.add_argument("--approval-anchor-revision", metavar="SHA")
+    protected_validate.add_argument("--json", dest="json_path", default="-", metavar="PATH")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "protected":
+        protected_errors: tuple[ProtectedError, ...]
+        try:
+            root = _root()
+        except (OSError, RuntimeError) as input_error:
+            protected_errors = (ProtectedError("PROT-001", "project root is unavailable", {"error": str(input_error)}),)
+        else:
+            try:
+                trusted_policy = TrustedPolicyInput(
+                    policy_bytes=_read_protected_caller_bytes(root, args.trusted_policy),
+                    schema_bytes=_read_protected_caller_bytes(root, args.trusted_policy_schema),
+                    identity=args.trusted_policy_identity,
+                    policy_digest=args.trusted_policy_digest,
+                    schema_digest=args.trusted_policy_schema_digest,
+                )
+            except OSError as input_error:
+                inspection = None
+                protected_errors = (
+                    ProtectedError(
+                        "PROT-001", "protected caller policy input is unavailable", {"error": str(input_error)}
+                    ),
+                )
+            else:
+                inspection, protected_errors = inspect_repository_changes(
+                    root, args.trusted_base_revision, args.candidate_revision, trusted_policy
+                )
+            if not protected_errors and inspection is not None:
+                authorization_context: AuthorizationContext | None = None
+                authorization_inputs = (
+                    args.authorization,
+                    args.trusted_authorization_schema,
+                    args.approval_anchor_revision,
+                )
+                if any(value is None for value in authorization_inputs) and any(
+                    value is not None for value in authorization_inputs
+                ):
+                    protected_errors = (
+                        ProtectedError(
+                            "PROT-004",
+                            "authorization, its trusted schema, and approval anchor must be supplied together",
+                            {},
+                        ),
+                    )
+                elif args.authorization is not None:
+                    assert args.trusted_authorization_schema is not None
+                    try:
+                        authorization_bytes = _read_protected_caller_bytes(root, args.authorization)
+                        authorization_schema_bytes = _read_protected_caller_bytes(
+                            root, args.trusted_authorization_schema
+                        )
+                    except OSError as input_error:
+                        envelope = None
+                        protected_errors = (
+                            ProtectedError(
+                                "PROT-004",
+                                "protected caller authorization input is unavailable",
+                                {"error": str(input_error)},
+                            ),
+                        )
+                    else:
+                        envelope, protected_errors = load_trusted_authorization(
+                            authorization_bytes, authorization_schema_bytes
+                        )
+                    if not protected_errors and envelope is not None:
+                        authorization_context = AuthorizationContext(
+                            envelope=envelope,
+                            approval_anchor_revision=args.approval_anchor_revision,
+                            contract_digest=args.contract_digest,
+                        )
+                if not protected_errors:
+                    protected_errors = evaluate_protected_changes(
+                        inspection.policy,
+                        inspection.effects,
+                        inspection.identity,
+                        inspection.change_set_digest,
+                        args.contract_digest,
+                        authorization_context,
+                    )
+        payload = (
+            json.dumps(
+                {
+                    "errors": [asdict(error) for error in protected_errors],
+                    "verdict": "contract-invalid" if protected_errors else "pass",
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n"
+        )
+        if not _write_payload(payload, args.json_path):
+            return 3
+        for protected_error in protected_errors:
+            diagnostic = (
+                f"{protected_error.code} contract-invalid: {protected_error.message}; context={protected_error.context}"
+            )
+            print(
+                diagnostic,
+                file=sys.stderr,
+            )
+        return 3 if protected_errors else 0
     if args.command == "contract":
         errors: tuple[ContractError, ...]
         try:

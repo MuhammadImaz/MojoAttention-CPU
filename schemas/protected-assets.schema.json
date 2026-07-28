@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/mojoattention/protected-assets.schema.json",
+  "title": "MojoAttention Protected Assets Policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "protected_categories", "protected_scopes", "generated_rules", "remediation"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "protected_categories": {
+      "type": "array",
+      "minItems": 17,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "tests", "schemas", "tolerances", "baselines", "workflows", "dependency-locks",
+          "agent-policy", "codeowners", "golden-data", "required-check-policy", "generated-outputs",
+          "reference-oracles", "acceptance-contracts", "ownership-metadata", "protected-policy",
+          "authorization-controls", "protected-evaluator"
+        ]
+      },
+      "allOf": [
+        {"contains": {"const": "tests"}}, {"contains": {"const": "schemas"}},
+        {"contains": {"const": "tolerances"}}, {"contains": {"const": "baselines"}},
+        {"contains": {"const": "workflows"}}, {"contains": {"const": "dependency-locks"}},
+        {"contains": {"const": "agent-policy"}}, {"contains": {"const": "codeowners"}},
+        {"contains": {"const": "golden-data"}}, {"contains": {"const": "required-check-policy"}},
+        {"contains": {"const": "generated-outputs"}}, {"contains": {"const": "reference-oracles"}},
+        {"contains": {"const": "acceptance-contracts"}}, {"contains": {"const": "ownership-metadata"}},
+        {"contains": {"const": "protected-policy"}}, {"contains": {"const": "authorization-controls"}},
+        {"contains": {"const": "protected-evaluator"}}
+      ]
+    },
+    "protected_scopes": {
+      "type": "array",
+      "minItems": 17,
+      "items": {"$ref": "#/$defs/scope"}
+    },
+    "generated_rules": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/generated_rule"}
+    },
+    "remediation": {"type": "string", "minLength": 1}
+  },
+  "$defs": {
+    "paths": {
+      "type": "array", "minItems": 1, "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "scope": {
+      "type": "object", "additionalProperties": false,
+      "required": ["category", "paths"],
+      "properties": {
+        "category": {"type": "string"},
+        "paths": {"$ref": "#/$defs/paths"}
+      }
+    },
+    "generated_rule": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "trigger_paths", "output_paths"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "trigger_paths": {"$ref": "#/$defs/paths"},
+        "output_paths": {"$ref": "#/$defs/paths"}
+      }
+    }
+  }
+}

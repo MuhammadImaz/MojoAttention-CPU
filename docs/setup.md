@@ -48,6 +48,25 @@ The example returns `pass`. A deterministic digest failure can be demonstrated s
 
 Contracts that name protected paths additionally require both `--authorization <file>` and an independently obtained `--approval-anchor-revision <sha>`. The authorization file must be outside the proposed repository and bind that human approval anchor, the exact contract digest, source/trusted-base revisions, and exact protected paths. This is contract feedback, not proof that the supplied approval came from trusted state; Story 1.4 owns that enforcement.
 
+Evaluate committed candidate changes using policy/schema bytes acquired by a protected caller:
+
+```bash
+scripts/run.sh mojoattention protected validate \
+  --trusted-base-revision <40-hex-base-commit> \
+  --candidate-revision <40-hex-candidate-commit> \
+  --contract-digest <sha256:...> \
+  --trusted-policy <protected-policy-file> \
+  --trusted-policy-schema <protected-schema-file> \
+  --trusted-policy-identity <40-hex-recorded-policy-oid> \
+  --trusted-policy-digest <sha256:policy-bytes> \
+  --trusted-policy-schema-digest <sha256:schema-bytes> \
+  --json -
+```
+
+The command compares the exact trees using config-isolated, NUL-delimited Git plumbing. An unauthorized protected effect returns `PROT-003` and exit `3`. For authorized work, add `--authorization <protected-caller-file>`, `--trusted-authorization-schema <protected-schema-file>`, and `--approval-anchor-revision <40-hex-independent-anchor>`. The version 2 envelope binds the exact identities, policy bytes, effect digest, contract, protected paths, and anchor; its provenance digest and strict schema are checked before use.
+
+Candidate-checkout policy or authorization paths are never trust sources. A human must bootstrap the first policy and protected approval channel outside the proposal. This deterministic local command is feedback, not proof that hosted branch rules, caller inputs, or approval provenance are authoritative. Complete trusted-policy-first CI ordering and administrator governance auditing remain Story 1.8 work.
+
 Baseline requires Linux x86-64, glibc 2.34+, effective x86-64-v3, 8 GiB total RAM, and four logical CPUs. Broad mode additionally requires 4 GiB available RAM, 15 GiB free disk, no active/unsealed run, and project Modular cache below 80% of its 5,000,000,000-byte budget. It warns at 70%. Filesystem capacity and project-cache budget are independent gates.
 
 Exit 0 is pass (warnings included), 2 is `infrastructure-invalid`, 3 is `contract-invalid`, and 64 is invalid CLI usage. JSON goes only to `--json`; diagnostics go to stderr. A successful live broad check reports `pass`. Deterministic warning/failure examples can be exercised safely without filling the disk:
