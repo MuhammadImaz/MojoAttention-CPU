@@ -76,6 +76,108 @@ class AuthorizationContext:
     contract_digest: str
 
 
+_TRUSTED_CONTEXT_TOKEN = object()
+
+
+@dataclass(frozen=True)
+class TrustedEvaluationContext:
+    """Non-serializable writer authority constructed after trusted evaluation."""
+
+    _canonical_payload: bytes
+    _construction_token: object
+
+    def __post_init__(self) -> None:
+        if self._construction_token is not _TRUSTED_CONTEXT_TOKEN:
+            raise ValueError("trusted evaluation context must come from protected evaluation")
+
+    def evidence_context(self) -> dict[str, Any]:
+        value = json.loads(self._canonical_payload)
+        if not isinstance(value, dict):
+            raise ValueError("trusted evaluation context is invalid")
+        return value
+
+
+def _compose_trusted_evaluation_context(
+    inspection: Inspection,
+    trusted_policy: TrustedPolicyInput,
+    protected_errors: tuple[ProtectedError, ...],
+    bounded_context: dict[str, Any],
+    authorization: AuthorizationContext | None,
+) -> TrustedEvaluationContext:
+    """Bind suite inputs to identities already resolved by the protected evaluator."""
+
+    required = {
+        "suite_id",
+        "contract_digest",
+        "config_digest",
+        "protocol_digest",
+        "declared_case_ids",
+        "declared_validation_ids",
+        "seed",
+        "producer",
+        "environment",
+    }
+    if set(bounded_context) != required:
+        raise ValueError("bounded evidence context fields are incomplete or unknown")
+    payload = dict(bounded_context)
+    payload.update(inspection.identity)
+    payload.update(
+        {
+            "source_revision": inspection.identity["trusted_base_revision"],
+            "source_tree": inspection.identity["trusted_base_tree"],
+            "trusted_schema_oid": git_blob_oid(trusted_policy.schema_bytes),
+            "trusted_schema_digest": trusted_policy.schema_digest,
+            "change_set_digest": inspection.change_set_digest,
+            "authorization_id": (authorization.envelope["authorization_id"] if authorization is not None else None),
+            "provenance_digest": (authorization.envelope["provenance_digest"] if authorization is not None else None),
+        }
+    )
+    # A trusted policy rejection is evidence-capable; acquisition/identity failures
+    # never produce an Inspection and therefore cannot reach this composition point.
+    if any(error.code not in {"PROT-003", "PROT-004"} for error in protected_errors):
+        raise ValueError("untrusted acquisition errors cannot form evidence context")
+    return TrustedEvaluationContext(_canonical_bytes(payload), _TRUSTED_CONTEXT_TOKEN)
+
+
+def evaluate_and_compose_trusted_context(
+    root: Path,
+    trusted_base_revision: str,
+    candidate_revision: str,
+    trusted_policy: TrustedPolicyInput,
+    contract_digest: str,
+    bounded_context: dict[str, Any],
+    authorization: AuthorizationContext | None,
+) -> tuple[TrustedEvaluationContext | None, tuple[ProtectedError, ...]]:
+    """Perform trusted acquisition and policy evaluation before issuing writer authority."""
+
+    inspection, acquisition_errors = inspect_repository_changes(
+        root,
+        trusted_base_revision,
+        candidate_revision,
+        trusted_policy,
+    )
+    if acquisition_errors or inspection is None:
+        return None, acquisition_errors
+    protected_errors = evaluate_protected_changes(
+        inspection.policy,
+        inspection.effects,
+        inspection.identity,
+        inspection.change_set_digest,
+        contract_digest,
+        authorization,
+    )
+    return (
+        _compose_trusted_evaluation_context(
+            inspection,
+            trusted_policy,
+            protected_errors,
+            bounded_context,
+            authorization,
+        ),
+        protected_errors,
+    )
+
+
 @dataclass(frozen=True)
 class TrustedPolicyInput:
     policy_bytes: bytes

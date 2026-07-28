@@ -19,6 +19,7 @@ REQUIRED_ROLES = frozenset(
         "validation-triage",
         "performance-analyst",
         "documentation-agent",
+        "evidence-producer",
     }
 )
 READ_ONLY_ROLES = frozenset({"explorer", "acceptance-auditor", "validation-triage"})
@@ -33,7 +34,9 @@ class AuthorityError:
 
 
 def _canonical_scope(scope: str, root: Path) -> bool:
-    return is_canonical_repo_path(scope, root, require_exists=True)
+    # Output and curated boundaries may intentionally be absent in a clean checkout.
+    # Canonicalization still rejects traversal and every existing symlink prefix.
+    return is_canonical_repo_path(scope, root, require_exists=False)
 
 
 def _canonical_target(path: str, root: Path) -> bool:

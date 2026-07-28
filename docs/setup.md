@@ -87,3 +87,12 @@ Preflight never deletes data. When PF-302 warns or stops:
 4. Recreate empty `.cache/modular`, run broad preflight, and only remove quarantined data later after confirming no required evidence or active specialization depends on it.
 
 The real PyTorch-to-Mojo custom-operation round trip and routing proof belong to Milestone 1B (Stories 2.4 and 2.6). GitHub repository rules and administrator controls remain external human actions.
+
+## Validation evidence
+
+Evidence is staged below `reports/runs/` and published only after durable closure
+verification. Use `scripts/run.sh mojoattention evidence verify --run PATH` for
+read-only inspection. Its stable exits are pass `0`, product failure `1`,
+infrastructure-invalid `2`, contract-invalid `3`, and invalid usage `64`.
+Branch-local generation is feedback; later CI and Agent Loop stories own trusted
+retention and governance.
