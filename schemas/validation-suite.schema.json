@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/mojoattention/validation-suite.schema.json",
+  "title": "MojoAttention Validation Suite Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "suite_id",
+    "manifest_digest",
+    "config_digest",
+    "seed",
+    "required_total",
+    "reference_target_ns",
+    "runner_config",
+    "checks"
+  ],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "suite_id": {"const": "fast"},
+    "manifest_digest": {"$ref": "#/$defs/digest"},
+    "config_digest": {"$ref": "#/$defs/digest"},
+    "seed": {"const": 1601},
+    "required_total": {"const": 13},
+    "reference_target_ns": {"const": 180000000000},
+    "runner_config": {"$ref": "#/$defs/runner_config"},
+    "checks": {
+      "type": "array",
+      "minItems": 13,
+      "maxItems": 13,
+      "prefixItems": [
+        {"$ref": "#/$defs/fast_001"},
+        {"$ref": "#/$defs/fast_002"},
+        {"$ref": "#/$defs/fast_003"},
+        {"$ref": "#/$defs/fast_004"},
+        {"$ref": "#/$defs/fast_005"},
+        {"$ref": "#/$defs/fast_006"},
+        {"$ref": "#/$defs/fast_007"},
+        {"$ref": "#/$defs/fast_008"},
+        {"$ref": "#/$defs/fast_009"},
+        {"$ref": "#/$defs/fast_010"},
+        {"$ref": "#/$defs/fast_011"},
+        {"$ref": "#/$defs/fast_012"},
+        {"$ref": "#/$defs/fast_013"}
+      ],
+      "items": false
+    }
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "runner_config": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timeout_seconds", "max_output_bytes", "locale", "environment", "shard"],
+      "properties": {
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 170},
+        "max_output_bytes": {"type": "integer", "minimum": 1024, "maximum": 1048576},
+        "locale": {"const": "C"},
+        "environment": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "PATH",
+              "LC_ALL",
+              "MOJOATTENTION_PROJECT_ROOT",
+              "MOJOATTENTION_UV_BIN",
+              "UV_PROJECT_ENVIRONMENT",
+              "UV_CACHE_DIR",
+              "MODULAR_CACHE_DIR",
+              "XDG_CACHE_HOME"
+            ]
+          }
+        },
+        "shard": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["shard_index", "shard_total"],
+          "properties": {
+            "shard_index": {"const": 0},
+            "shard_total": {"const": 1}
+          }
+        }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "validation_id",
+        "case_id",
+        "kind",
+        "seed",
+        "required_count",
+        "expected_verdict",
+        "reproduction_argv"
+      ],
+      "properties": {
+        "validation_id": {"type": "string", "pattern": "^FAST-[0-9]{3}$"},
+        "case_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+        "kind": {"enum": ["foundation", "canary"]},
+        "seed": {"const": 1601},
+        "required_count": {"const": 1},
+        "expected_verdict": {
+          "enum": ["pass", "product-fail", "infrastructure-invalid", "contract-invalid"]
+        },
+        "reproduction_argv": {
+          "type": "array",
+          "minItems": 8,
+          "maxItems": 12,
+          "prefixItems": [
+            {"const": "mojoattention"},
+            {"const": "validate"},
+            {"const": "--suite"},
+            {"const": "fast"}
+          ],
+          "items": {"type": "string", "minLength": 1, "maxLength": 160}
+        }
+      }
+    },
+    "fast_001": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-001"}, "case_id": {"const": "acceptance-contract"}, "kind": {"const": "foundation"}, "expected_verdict": {"const": "pass"}}}]},
+    "fast_002": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-002"}, "case_id": {"const": "schema-validation"}, "kind": {"const": "foundation"}, "expected_verdict": {"const": "pass"}}}]},
+    "fast_003": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-003"}, "case_id": {"const": "static-analysis"}, "kind": {"const": "foundation"}, "expected_verdict": {"const": "pass"}}}]},
+    "fast_004": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-004"}, "case_id": {"const": "import-validation"}, "kind": {"const": "foundation"}, "expected_verdict": {"const": "pass"}}}]},
+    "fast_005": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-005"}, "case_id": {"const": "authority-discovery"}, "kind": {"const": "foundation"}, "expected_verdict": {"const": "pass"}}}]},
+    "fast_006": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-006"}, "case_id": {"const": "path-policy"}, "kind": {"const": "foundation"}, "expected_verdict": {"const": "pass"}}}]},
+    "fast_007": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-007"}, "case_id": {"const": "report-rendering"}, "kind": {"const": "foundation"}, "expected_verdict": {"const": "pass"}}}]},
+    "fast_008": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-008"}, "case_id": {"const": "assertion-removal-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "product-fail"}}}]},
+    "fast_009": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-009"}, "case_id": {"const": "workflow-disablement-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]},
+    "fast_010": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-010"}, "case_id": {"const": "tampered-report-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]},
+    "fast_011": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-011"}, "case_id": {"const": "incomplete-evidence-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]},
+    "fast_012": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-012"}, "case_id": {"const": "invalid-contract-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]},
+    "fast_013": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-013"}, "case_id": {"const": "unauthorized-change-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]}
+  }
+}
