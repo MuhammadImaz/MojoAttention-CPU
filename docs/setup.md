@@ -189,3 +189,114 @@ Fast's public identity. Candidate-local edits cannot self-approve the manifest,
 schemas, policy, runner, tests, or workflow because trust-bearing controls are
 read from authenticated Git state and protected-change authorization is
 evaluated separately.
+
+## Bounded Agent Loop
+
+The Agent Loop consumes an externally issued Acceptance Contract and completed,
+independently verified evidence. It never executes a shell command, infers a
+decision from prose, approves a protected change, or authorizes a merge. All
+trust-bearing inputs shown below must be supplied by a protected caller from
+outside the candidate checkout:
+
+```bash
+LOOP_TRUST_ARGS=(
+  --contract /outside/issued-contract.json
+  --trusted-base /outside/trusted-base-anchor.json
+  --trusted-policy /outside/protected-assets.json
+  --trusted-policy-schema /outside/protected-assets.schema.json
+  --authorization /outside/protected-change-authorization.json
+  --trusted-authorization-schema /outside/protected-change-authorization.schema.json
+  --approval-anchor-revision <40-hex-independent-human-approval>
+  --trusted-loop-schema /outside/agent-loop-state.schema.json
+  --role implementation-agent
+)
+```
+
+Start a loop with an explicit RFC 3339 UTC timestamp:
+
+```bash
+scripts/run.sh mojoattention agent-loop start \
+  "${LOOP_TRUST_ARGS[@]}" \
+  --timestamp 2026-07-30T12:00:00Z
+```
+
+The canonical JSON response contains the internally generated `loop_id`,
+`attempt: 1`, `retries_consumed: 0`, status `awaiting-validation`, and next
+action `record-validation`. The caller cannot choose the loop ID or journal
+path. The immutable layout is:
+
+```text
+reports/agent-loops/<generated-loop-id>/
+├── header.json
+└── events/
+    ├── 00000001.json
+    ├── 00000002.json
+    └── ...
+```
+
+Each sealed event commits its exact sequence, attempt, transition, prior-event
+digest, immutable control binding, evidence bindings, typed diagnosis and
+improvement proof where applicable, stop reason, actor kind, and timestamp.
+The initial attempt is `1`. A retry authorization increments the attempt and
+consumes exactly one retry; a budget of five therefore permits attempts 1–5,
+never attempt 6.
+
+Record a completed validation result by passing a structured event file and
+one independently verified `.complete` evidence directory:
+
+```bash
+scripts/run.sh mojoattention agent-loop evaluate \
+  "${LOOP_TRUST_ARGS[@]}" \
+  --loop-id <generated-loop-id> \
+  --event /outside/validation-event.json \
+  --evidence reports/runs/<generated-run-id>.complete
+```
+
+A valid pass moves to terminal `awaiting-human-review`; it does not mean
+approved or mergeable. A product failure moves to `validation-failed`.
+Infrastructure-invalid or contract-invalid evidence stops for human escalation.
+Exits remain `0` pass, `1` product failure, `2` infrastructure-invalid, `3`
+contract-invalid, and `64` invalid usage.
+
+After a product failure, a retry event must include `repair_request` with:
+
+- a diagnosis bound to the failed validation, stable error/failure signature,
+  evidence digest, affected canonical paths, and exact reproduction argv;
+- comparable previous/current observations and a strict metric improvement or
+  a required failure-to-pass change with no new regression;
+- repair paths inside both the contract and effective role authority; and
+- `requests_approval: false`, with no protected, generated-output, gate,
+  tolerance, baseline, schema, workflow, lock, reference, or self-approval
+  conflict.
+
+For example, reducing the same validation/case/config failure-count metric from
+`2` to `1` can authorize one bounded repair. Causality, nonfinite,
+unsupported-input, unexpected-fallback, missing-routing, nondeterminism,
+scope-expansion, protected-conflict, and validation-weakening failures stop
+without retry. An equal or worse metric, incomparable identity, repeated
+failure signature, new required failure, absent diagnosis, or exhausted budget
+is rejected as non-improving or budget-exhausted before a retry event can be
+appended.
+
+Inspect and verify the complete chain without modifying it:
+
+```bash
+scripts/run.sh mojoattention agent-loop inspect \
+  --loop-id <generated-loop-id> \
+  --trusted-loop-schema /outside/agent-loop-state.schema.json
+```
+
+Inspection rejects a changed header/event digest, broken genesis or prior-event
+binding, missing/duplicate/reordered/truncated event, unknown schema version,
+mixed evidence identity, or any event after a terminal state. It never repairs,
+normalizes, truncates, or completes history. After interruption, rerun
+`inspect`; only fully sealed records are replayed. An unsealed or orphan
+temporary tail is not evidence and cannot be inferred as progress.
+
+Append-only hash chaining detects and rejects corruption; it does not make the
+local filesystem, ignored journal, logs, or agent prose a security boundary.
+Trusted controls, external commit-bound human authorization, protected CI, and
+human review remain required. A terminal loop is never reopened: human repair
+or a newly approved contract starts a new loop. Story 1.8 owns hosted
+governance auditing, required-check ordering, retention policy, and complete CI
+enforcement.
