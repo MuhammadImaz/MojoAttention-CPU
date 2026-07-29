@@ -33,6 +33,7 @@ from mojoattention.validation.fast import (
     evidence_validations,
     execute_checks,
     load_manifest,
+    run_bounded_argv,
     verify_fast_evidence,
 )
 from mojoattention.validation.fast_canaries import execute_false_green_canary
@@ -217,6 +218,75 @@ def _fast_contract_inventory(contract: dict[str, Any], manifest: Any) -> None:
             raise ValueError(f"Acceptance Contract {field} differs from the trusted manifest")
 
 
+def _foundation_adapters(
+    root: Path,
+    manifest: Any,
+    *,
+    authority_valid: bool,
+) -> dict[str, CheckAdapter]:
+    """Bind foundation IDs to work already validated or to bounded executors."""
+
+    adapters: dict[str, CheckAdapter] = {}
+    for check in manifest.checks:
+        if check.kind != "foundation":
+            continue
+        if check.validation_id == "FAST-003":
+
+            def static_adapter(item: FastCheck) -> AdapterResult:
+                process = run_bounded_argv(
+                    ("ruff", "check", "."),
+                    root,
+                    manifest.runner_config,
+                )
+                if process.error is not None:
+                    return AdapterResult.failed(item, process.failure_class or "product-fail", process.error)
+                return AdapterResult.passed(item)
+
+            adapters[check.validation_id] = static_adapter
+        elif check.validation_id == "FAST-004":
+
+            def import_adapter(item: FastCheck) -> AdapterResult:
+                process = run_bounded_argv(
+                    (sys.executable, "-c", "import mojoattention"),
+                    root,
+                    manifest.runner_config,
+                )
+                if process.error is not None:
+                    return AdapterResult.failed(item, process.failure_class or "product-fail", process.error)
+                return AdapterResult.passed(item)
+
+            adapters[check.validation_id] = import_adapter
+        elif check.validation_id == "FAST-005" and not authority_valid:
+            adapters[check.validation_id] = lambda item: AdapterResult.failed(
+                item,
+                "contract-invalid",
+                FastError("FAST-AUTH-001", "candidate authority controls are invalid", {}),
+            )
+        elif check.validation_id == "FAST-006":
+
+            def path_adapter(item: FastCheck) -> AdapterResult:
+                forbidden = find_forbidden_tracked_paths(tracked_paths(str(root)))
+                if forbidden:
+                    return AdapterResult.failed(
+                        item,
+                        "contract-invalid",
+                        FastError(
+                            "FAST-PATH-001",
+                            "tracked paths violate public privacy policy",
+                            {"count": len(forbidden)},
+                        ),
+                    )
+                return AdapterResult.passed(item)
+
+            adapters[check.validation_id] = path_adapter
+        else:
+            # FAST-001/002 were validated from immutable contract/schema bytes
+            # before this map is created. FAST-007 is closed only after the
+            # shared renderer and independent evidence verifier succeed below.
+            adapters[check.validation_id] = AdapterResult.passed
+    return adapters
+
+
 def run_fast_validation(
     root: Path,
     contract_path: str,
@@ -244,7 +314,8 @@ def run_fast_validation(
     acceptance_schema = _candidate_blob(root, candidate_revision, "schemas/acceptance-contract.schema.json")
     evidence_schema = _candidate_blob(root, candidate_revision, "schemas/validation-evidence.schema.json")
     authority_manifest = json.loads(authority_bytes)
-    if validate_manifest(authority_manifest, root, schema_bytes=authority_schema):
+    authority_errors = validate_manifest(authority_manifest, root, schema_bytes=authority_schema)
+    if authority_errors:
         raise ValueError("candidate authority controls are invalid")
     json.loads(evidence_schema)
 
@@ -301,9 +372,7 @@ def run_fast_validation(
     if trusted_context is None:
         raise ValueError("trusted Fast controls could not be acquired")
 
-    adapters: dict[str, CheckAdapter] = {
-        item.validation_id: AdapterResult.passed for item in manifest.checks if item.kind == "foundation"
-    }
+    adapters = _foundation_adapters(root, manifest, authority_valid=not authority_errors)
     with tempfile.TemporaryDirectory(prefix="mojoattention-fast-canaries-") as canary_directory:
 
         def canary_adapter(check: FastCheck) -> AdapterResult:

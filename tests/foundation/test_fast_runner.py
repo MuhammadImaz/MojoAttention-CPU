@@ -67,10 +67,19 @@ class FastRunnerTests(unittest.TestCase):
     def test_inventory_and_execution_drift_fail_closed(self) -> None:
         canonical = self.observations()
         mutations = (
+            (),
             canonical[:-1],
             canonical + (canonical[0],),
+            (replace(canonical[0], validation_id="FAST-UNKNOWN"), *canonical[1:]),
             tuple(reversed(canonical)),
+            (replace(canonical[0], case_id="wrong-case"), *canonical[1:]),
             (replace(canonical[0], seed=9), *canonical[1:]),
+            (replace(canonical[0], selected=0), *canonical[1:]),
+            (replace(canonical[0], selected=2), *canonical[1:]),
+            (replace(canonical[0], collected=0), *canonical[1:]),
+            (replace(canonical[0], collected=2), *canonical[1:]),
+            (replace(canonical[0], completed=0), *canonical[1:]),
+            (replace(canonical[0], completed=2), *canonical[1:]),
             (replace(canonical[0], skipped=1, completed=0), *canonical[1:]),
             (replace(canonical[0], xfailed=1), *canonical[1:]),
             (replace(canonical[0], deselected=1), *canonical[1:]),
@@ -124,6 +133,20 @@ class FastRunnerTests(unittest.TestCase):
             missing = run_bounded_argv(("tool",), ROOT, manifest.runner_config)
         self.assertEqual("infrastructure-invalid", missing.failure_class)
         self.assertEqual("FAST-EXEC-001", missing.error.code)
+        with patch("subprocess.run", side_effect=OSError("private diagnostic")):
+            unavailable = run_bounded_argv(("tool",), ROOT, manifest.runner_config)
+        self.assertEqual("infrastructure-invalid", unavailable.failure_class)
+        self.assertEqual("FAST-EXEC-003", unavailable.error.code)
+        self.assertNotIn("private diagnostic", unavailable.error.message)
+
+    def test_bounded_subprocess_nonzero_is_typed_without_parsing_human_output(self) -> None:
+        manifest = self.manifest()
+        for output in (b"looks successful", b"fatal failure", b""):
+            completed = subprocess.CompletedProcess(["tool"], 7, stdout=output, stderr=output)
+            with self.subTest(output=output), patch("subprocess.run", return_value=completed):
+                result = run_bounded_argv(("tool", "--machine"), ROOT, manifest.runner_config)
+            self.assertEqual("product-fail", result.failure_class)
+            self.assertEqual("FAST-EXEC-004", result.error.code)
 
     def test_bounded_subprocess_caps_output_and_rejects_recursive_or_unbounded_commands(self) -> None:
         config = replace(self.manifest().runner_config, max_output_bytes=4)

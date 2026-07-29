@@ -357,6 +357,20 @@ def run_bounded_argv(argv: tuple[str, ...], cwd: Path, config: RunnerConfig) -> 
     stderr = completed.stderr or b""
     limit = config.max_output_bytes
     truncated = len(stdout) > limit or len(stderr) > limit
+    if completed.returncode != 0:
+        error = _error(
+            "FAST-EXEC-004",
+            "bounded subprocess returned a nonzero exit",
+            returncode=completed.returncode,
+        )
+        return ProcessResult(
+            completed.returncode,
+            stdout[:limit],
+            stderr[:limit],
+            truncated,
+            "product-fail",
+            error,
+        )
     return ProcessResult(completed.returncode, stdout[:limit], stderr[:limit], truncated)
 
 

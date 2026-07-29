@@ -3,15 +3,17 @@ from __future__ import annotations
 import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from copy import deepcopy
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from mojoattention.cli.main import build_parser, main
+from mojoattention.cli.main import _fast_contract_inventory, _foundation_adapters, build_parser, main
 from mojoattention.validation.fast import (
     FastError,
     FastRunResult,
     Observation,
+    ProcessResult,
     evidence_validations,
     verify_fast_evidence,
 )
@@ -111,6 +113,143 @@ class FastCliTests(unittest.TestCase):
             json.loads(stdout.getvalue()),
         )
         self.assertNotIn("private", stderr.getvalue())
+
+    def test_validate_usage_exit_is_64_and_diagnostic_only_uses_stderr(self) -> None:
+        stdout = StringIO()
+        stderr = StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr), self.assertRaises(SystemExit) as raised:
+            main(["validate", "--suite", "fast"])
+        self.assertEqual(64, raised.exception.code)
+        self.assertEqual("", stdout.getvalue())
+        self.assertIn("usage:", stderr.getvalue())
+
+    def test_all_public_verdicts_have_exact_exits_and_canonical_stdout(self) -> None:
+        expected = {"pass": 0, "product-fail": 1, "infrastructure-invalid": 2, "contract-invalid": 3}
+        for verdict, expected_exit in expected.items():
+            stdout = StringIO()
+            stderr = StringIO()
+            with (
+                self.subTest(verdict=verdict),
+                patch(
+                    "mojoattention.cli.main.run_fast_validation",
+                    return_value=(verdict, Path("/repo/reports/runs/generated.complete"), ()),
+                ),
+                patch("mojoattention.cli.main._root", return_value=Path("/repo")),
+                redirect_stdout(stdout),
+                redirect_stderr(stderr),
+            ):
+                exit_code = main(
+                    [
+                        "validate",
+                        "--suite",
+                        "fast",
+                        "--contract",
+                        "/tmp/issued-contract.json",
+                        "--output",
+                        "reports/runs",
+                    ]
+                )
+            self.assertEqual(expected_exit, exit_code)
+            self.assertEqual(verdict, json.loads(stdout.getvalue())["verdict"])
+            self.assertEqual("", stderr.getvalue())
+            self.assertTrue(stdout.getvalue().endswith("\n"))
+
+
+class FastContractIntersectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from mojoattention.validation.fast import load_manifest
+
+        root = Path(__file__).resolve().parents[2]
+        self.manifest = load_manifest(
+            (root / "contracts/validation-suites/fast.json").read_bytes(),
+            (root / "schemas/validation-suite.schema.json").read_bytes(),
+        )
+        self.contract = {
+            "schema_version": "2.0.0",
+            "suite_manifest_digest": self.manifest.manifest_digest,
+            "config_digest": self.manifest.config_digest,
+            "required_suites": [
+                {
+                    "suite_id": "fast",
+                    "validations": [
+                        {"validation_id": item.validation_id, "required_count": item.required_count}
+                        for item in self.manifest.checks
+                    ],
+                    "required_total": self.manifest.required_total,
+                }
+            ],
+        }
+
+    def test_exact_contract_manifest_intersection_passes(self) -> None:
+        _fast_contract_inventory(self.contract, self.manifest)
+
+    def test_any_contract_manifest_drift_is_rejected(self) -> None:
+        mutations = []
+        missing = deepcopy(self.contract)
+        missing["required_suites"][0]["validations"].pop()
+        mutations.append(missing)
+        extra = deepcopy(self.contract)
+        extra["required_suites"][0]["validations"].append({"validation_id": "FAST-999", "required_count": 1})
+        mutations.append(extra)
+        reordered = deepcopy(self.contract)
+        reordered["required_suites"][0]["validations"].reverse()
+        mutations.append(reordered)
+        count = deepcopy(self.contract)
+        count["required_suites"][0]["validations"][0]["required_count"] = 2
+        mutations.append(count)
+        total = deepcopy(self.contract)
+        total["required_suites"][0]["required_total"] = 0
+        mutations.append(total)
+        suite_digest = deepcopy(self.contract)
+        suite_digest["suite_manifest_digest"] = "sha256:" + "0" * 64
+        mutations.append(suite_digest)
+        config_digest = deepcopy(self.contract)
+        config_digest["config_digest"] = "sha256:" + "0" * 64
+        mutations.append(config_digest)
+        wrong_version = deepcopy(self.contract)
+        wrong_version["schema_version"] = "1.0.0"
+        mutations.append(wrong_version)
+        for contract in mutations:
+            with self.subTest(contract=contract), self.assertRaises(ValueError):
+                _fast_contract_inventory(contract, self.manifest)
+
+    def test_foundation_adapters_execute_static_import_and_path_checks(self) -> None:
+        adapters = _foundation_adapters(Path("/repo"), self.manifest, authority_valid=True)
+        checks = {item.validation_id: item for item in self.manifest.checks}
+        with (
+            patch(
+                "mojoattention.cli.main.run_bounded_argv",
+                return_value=ProcessResult(0, b"", b"", False),
+            ) as bounded,
+            patch("mojoattention.cli.main.tracked_paths", return_value=b"src/mojoattention/__init__.py\0"),
+        ):
+            self.assertEqual("pass", adapters["FAST-003"](checks["FAST-003"]).observation.status)
+            self.assertEqual("pass", adapters["FAST-004"](checks["FAST-004"]).observation.status)
+            self.assertEqual("pass", adapters["FAST-006"](checks["FAST-006"]).observation.status)
+        self.assertEqual(("ruff", "check", "."), bounded.call_args_list[0].args[0])
+        self.assertEqual("-c", bounded.call_args_list[1].args[0][1])
+
+    def test_foundation_adapter_failures_are_typed_and_private_paths_are_not_reported(self) -> None:
+        adapters = _foundation_adapters(Path("/repo"), self.manifest, authority_valid=True)
+        checks = {item.validation_id: item for item in self.manifest.checks}
+        failed = ProcessResult(
+            9,
+            b"human success text",
+            b"human failure text",
+            False,
+            "product-fail",
+            FastError("FAST-EXEC-004", "bounded subprocess returned a nonzero exit", {}),
+        )
+        with patch("mojoattention.cli.main.run_bounded_argv", return_value=failed):
+            static = adapters["FAST-003"](checks["FAST-003"])
+        self.assertEqual("product-fail", static.observation.failure_class)
+        with patch(
+            "mojoattention.cli.main.tracked_paths",
+            return_value=b".agents/private-state.json\0.codex/session.json\0",
+        ):
+            path = adapters["FAST-006"](checks["FAST-006"])
+        self.assertEqual("contract-invalid", path.observation.failure_class)
+        self.assertEqual({"count": 2}, path.errors[0].context)
 
 
 class FastEvidenceTranslationTests(unittest.TestCase):

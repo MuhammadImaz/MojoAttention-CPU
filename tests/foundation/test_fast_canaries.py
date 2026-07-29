@@ -215,6 +215,20 @@ class FastFalseGreenCanaryTests(unittest.TestCase):
                     result = execute_false_green_canary(check, canary_root, trusted)
                     self.assertEqual("pass", result.observation.status)
                     self.assertEqual((), result.errors)
+                    self.assertEqual(
+                        (
+                            "mojoattention",
+                            "validate",
+                            "--suite",
+                            "fast",
+                            "--contract",
+                            "contracts/acceptance/1-6-fast.example.json",
+                            "--output",
+                            "reports/runs",
+                        ),
+                        check.reproduction_argv,
+                    )
+            self.assertEqual((), tuple(canary_root.iterdir()))
 
 
 if __name__ == "__main__":
