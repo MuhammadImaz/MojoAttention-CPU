@@ -36,13 +36,6 @@
     "attachment_closure_digest",
     "evidence_digest"
   ],
-  "allOf": [
-    {
-      "if": {"properties": {"schema_version": {"const": "2.0.0"}}},
-      "then": {"required": ["suite_manifest_digest"]},
-      "else": {"not": {"required": ["suite_manifest_digest"]}}
-    }
-  ],
   "properties": {
     "schema_version": {"enum": ["1.0.0", "2.0.0"]},
     "run_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
@@ -116,6 +109,11 @@
     "evidence_digest": {"$ref": "#/$defs/digest"}
   },
   "allOf": [
+    {
+      "if": {"properties": {"schema_version": {"const": "2.0.0"}}},
+      "then": {"required": ["suite_manifest_digest"]},
+      "else": {"not": {"required": ["suite_manifest_digest"]}}
+    },
     {
       "if": {
         "required": ["verdict"],

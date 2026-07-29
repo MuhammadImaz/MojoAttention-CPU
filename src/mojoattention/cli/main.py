@@ -19,8 +19,18 @@ from mojoattention.validation.evidence import (
     Attachment,
     EvidenceWriter,
     canonical_bytes,
+    digest_bytes,
     read_approved_attachment,
     verify_evidence,
+)
+from mojoattention.validation.fast import (
+    FAST_PROTOCOL_DIGEST,
+    AdapterResult,
+    FastError,
+    FastRunResult,
+    evidence_validations,
+    execute_checks,
+    load_manifest,
 )
 from mojoattention.validation.host import probe
 from mojoattention.validation.identity import detect_identity, evaluate_identity
@@ -33,6 +43,7 @@ from mojoattention.validation.protected_assets import (
     TrustedPolicyInput,
     evaluate_and_compose_trusted_context,
     evaluate_protected_changes,
+    git_blob_oid,
     inspect_repository_changes,
     load_trusted_authorization,
 )
@@ -180,6 +191,162 @@ def _candidate_blob(root: Path, revision: str, path: str) -> bytes:
     return result.stdout
 
 
+def _trusted_blob(root: Path, revision: str, path: str) -> bytes:
+    return _candidate_blob(root, revision, path)
+
+
+def _fast_contract_inventory(contract: dict[str, Any], manifest: Any) -> None:
+    if contract.get("schema_version") != "2.0.0":
+        raise ValueError("Fast requires Acceptance Contract v2")
+    expected = [
+        {"validation_id": check.validation_id, "required_count": check.required_count} for check in manifest.checks
+    ]
+    suites = contract.get("required_suites")
+    if suites != [{"suite_id": "fast", "validations": expected, "required_total": manifest.required_total}]:
+        raise ValueError("Acceptance Contract Fast inventory differs from the trusted manifest")
+    bindings = {
+        "suite_manifest_digest": manifest.manifest_digest,
+        "config_digest": manifest.config_digest,
+    }
+    for field, expected_value in bindings.items():
+        if contract.get(field) != expected_value:
+            raise ValueError(f"Acceptance Contract {field} differs from the trusted manifest")
+
+
+def run_fast_validation(
+    root: Path,
+    contract_path: str,
+    output: Path,
+) -> tuple[str, Path, tuple[FastError, ...]]:
+    """Run the authenticated Fast orchestration and publish one verified closure."""
+
+    writer: EvidenceWriter | None = None
+    contract_bytes = _read_protected_caller_bytes(root, contract_path)
+    contract = json.loads(contract_bytes)
+    if not isinstance(contract, dict):
+        raise ValueError("Acceptance Contract must be an object")
+    candidate_revision = str(contract.get("source_revision", ""))
+    trusted_base_revision = str(contract.get("trusted_base_revision", ""))
+    _require_candidate_checkout(root, candidate_revision)
+
+    manifest_bytes = _trusted_blob(root, trusted_base_revision, "contracts/validation-suites/fast.json")
+    manifest_schema = _trusted_blob(root, trusted_base_revision, "schemas/validation-suite.schema.json")
+    policy_bytes = _trusted_blob(root, trusted_base_revision, "contracts/protected-assets.json")
+    policy_schema = _trusted_blob(root, trusted_base_revision, "schemas/protected-assets.schema.json")
+    # Candidate-owned authority and evidence interfaces are acquired once from
+    # the bound commit, never from mutable worktree bytes after execution.
+    authority_bytes = _candidate_blob(root, candidate_revision, "contracts/agent-authority.json")
+    authority_schema = _candidate_blob(root, candidate_revision, "schemas/agent-authority.schema.json")
+    acceptance_schema = _candidate_blob(root, candidate_revision, "schemas/acceptance-contract.schema.json")
+    evidence_schema = _candidate_blob(root, candidate_revision, "schemas/validation-evidence.schema.json")
+    authority_manifest = json.loads(authority_bytes)
+    if validate_manifest(authority_manifest, root, schema_bytes=authority_schema):
+        raise ValueError("candidate authority controls are invalid")
+    json.loads(evidence_schema)
+
+    manifest = load_manifest(manifest_bytes, manifest_schema)
+    _fast_contract_inventory(contract, manifest)
+    if contract.get("protocol_digest") != FAST_PROTOCOL_DIGEST:
+        raise ValueError("Acceptance Contract protocol_digest differs from the runner protocol")
+    contract_errors = validate_contract(
+        contract,
+        root,
+        ContractContext(
+            source_revision=candidate_revision,
+            trusted_base_revision=trusted_base_revision,
+            prior_validation_identity=None,
+        ),
+        schema_bytes=acceptance_schema,
+    )
+    if contract_errors:
+        raise ValueError("Acceptance Contract is invalid")
+
+    bounded_context = {
+        "suite_id": manifest.suite_id,
+        "contract_digest": contract["contract_digest"],
+        "suite_manifest_digest": manifest.manifest_digest,
+        "config_digest": manifest.config_digest,
+        "protocol_digest": FAST_PROTOCOL_DIGEST,
+        "declared_case_ids": [item.case_id for item in manifest.checks],
+        "declared_validation_ids": [item.validation_id for item in manifest.checks],
+        "seed": manifest.seed,
+        "producer": {"name": "mojoattention", "version": "1.0.0"},
+        "environment": {
+            "os": sys.platform.replace("_", "-"),
+            "architecture": os.uname().machine.replace("_", "-"),
+            "python_version": ".".join(str(item) for item in sys.version_info[:3]),
+        },
+    }
+    trusted_policy = TrustedPolicyInput(
+        policy_bytes,
+        policy_schema,
+        git_blob_oid(policy_bytes),
+        digest_bytes(policy_bytes),
+        digest_bytes(policy_schema),
+    )
+    trusted_context, protected_errors = evaluate_and_compose_trusted_context(
+        root,
+        trusted_base_revision,
+        candidate_revision,
+        trusted_policy,
+        contract["contract_digest"],
+        bounded_context,
+        None,
+    )
+    if trusted_context is None:
+        raise ValueError("trusted Fast controls could not be acquired")
+
+    adapters = {item.validation_id: AdapterResult.passed for item in manifest.checks}
+    result = execute_checks(manifest, adapters)
+    if protected_errors:
+        first = result.observations[0]
+        rejected = type(first)(
+            first.validation_id,
+            first.case_id,
+            first.seed,
+            first.selected,
+            first.collected,
+            first.completed,
+            first.skipped,
+            first.xfailed,
+            first.deselected,
+            first.collection_errors,
+            first.shard_index,
+            first.shard_total,
+            "fail",
+            "contract-invalid",
+        )
+        errors = tuple(FastError(item.code, item.message, item.context) for item in protected_errors)
+        result = FastRunResult(
+            "contract-invalid",
+            (rejected, *result.observations[1:]),
+            errors,
+            result.elapsed_ns,
+        )
+    _require_candidate_checkout(root, candidate_revision)
+    try:
+        writer = EvidenceWriter(output, trusted_context)
+        validations = evidence_validations(
+            result,
+            {item.validation_id: item.reproduction_argv for item in manifest.checks},
+        )
+        complete = writer.finalize(
+            verdict=result.verdict,
+            validations=validations,
+            attachments=[],
+            schema_path=evidence_schema,
+        )
+        verified = verify_evidence(complete, evidence_schema)
+        if verified.errors or verified.manifest is None:
+            raise OSError("published Fast evidence failed independent verification")
+        _require_candidate_checkout(root, candidate_revision)
+        return result.verdict, complete, result.errors
+    finally:
+        if writer is not None:
+            with suppress(OSError):
+                writer.abort()
+
+
 def _require_candidate_checkout(root: Path, revision: str) -> None:
     environment = {
         "PATH": os.environ.get("PATH", ""),
@@ -271,11 +438,79 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_produce.add_argument("--approval-anchor-revision", metavar="SHA")
     evidence_produce.add_argument("--output", default="reports/runs", metavar="PATH")
     evidence_produce.add_argument("--json", dest="json_path", default="-", metavar="PATH")
+    validate = commands.add_parser("validate")
+    validate.add_argument("--suite", choices=("fast",), required=True)
+    validate.add_argument("--contract", dest="contract_path", required=True, metavar="PATH")
+    validate.add_argument("--output", default="reports/runs", metavar="PATH")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "validate":
+        fast_payload: dict[str, Any]
+        if args.output != "reports/runs":
+            fast_payload = {
+                "errors": [
+                    {
+                        "code": "FAST-CLI-001",
+                        "message": "output must be the approved reports/runs root",
+                        "context": {"output": args.output},
+                    }
+                ],
+                "non_evidence": True,
+                "verdict": "contract-invalid",
+            }
+            print("FAST-CLI-001 contract-invalid: output root rejected", file=sys.stderr)
+            exit_code = EVIDENCE_EXIT_CODES["contract-invalid"]
+        else:
+            try:
+                root = _root()
+                verdict, complete, fast_errors = run_fast_validation(
+                    root,
+                    args.contract_path,
+                    root / "reports" / "runs",
+                )
+                fast_payload = {
+                    "errors": [
+                        {"code": item.code, "message": item.message, "context": dict(item.context)}
+                        for item in fast_errors
+                    ],
+                    "run": str(complete.relative_to(root)),
+                    "verdict": verdict,
+                }
+                exit_code = EVIDENCE_EXIT_CODES[verdict]
+            except KeyError, TypeError, json.JSONDecodeError, ValueError:
+                fast_payload = {
+                    "errors": [
+                        {
+                            "code": "FAST-CLI-002",
+                            "message": "Fast contract or trusted controls are invalid",
+                            "context": {"phase": "orchestrate"},
+                        }
+                    ],
+                    "non_evidence": True,
+                    "verdict": "contract-invalid",
+                }
+                print("FAST-CLI-002 contract-invalid: Fast orchestration rejected", file=sys.stderr)
+                exit_code = EVIDENCE_EXIT_CODES["contract-invalid"]
+            except OSError, RuntimeError:
+                fast_payload = {
+                    "errors": [
+                        {
+                            "code": "FAST-CLI-003",
+                            "message": "Fast execution or publication failed",
+                            "context": {"phase": "orchestrate"},
+                        }
+                    ],
+                    "non_evidence": True,
+                    "verdict": "infrastructure-invalid",
+                }
+                print("FAST-CLI-003 infrastructure-invalid: Fast orchestration failed", file=sys.stderr)
+                exit_code = EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+        if not _write_payload(canonical_bytes(fast_payload, newline=True).decode(), "-"):
+            return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+        return exit_code
     if args.command == "evidence":
         if args.evidence_command == "produce":
             writer: EvidenceWriter | None = None

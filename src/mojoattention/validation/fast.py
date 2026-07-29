@@ -8,7 +8,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
-from typing import Literal
+from typing import Any, Literal
 
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from jsonschema.exceptions import SchemaError  # type: ignore[import-untyped]
@@ -16,6 +16,19 @@ from jsonschema.exceptions import SchemaError  # type: ignore[import-untyped]
 from mojoattention.validation.evidence import canonical_bytes, digest_bytes
 
 Verdict = Literal["pass", "product-fail", "infrastructure-invalid", "contract-invalid"]
+FAST_PROTOCOL = {
+    "schema_version": "1.0.0",
+    "suite_id": "fast",
+    "state_machine": (
+        "declared",
+        "selected",
+        "started",
+        "completed",
+        "recorded",
+        "evidence-closed",
+    ),
+}
+FAST_PROTOCOL_DIGEST = digest_bytes(canonical_bytes(FAST_PROTOCOL))
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +126,56 @@ class FastRunResult:
 
 
 CheckAdapter = Callable[[FastCheck], AdapterResult]
+
+
+def evidence_validations(
+    result: FastRunResult,
+    reproduction_argv: Mapping[str, tuple[str, ...]],
+) -> list[dict[str, Any]]:
+    """Translate structured runner observations into the shared evidence interface."""
+
+    validations: list[dict[str, Any]] = []
+    for observation in result.observations:
+        related = [
+            error for error in result.errors if error.context.get("validation_id") in (None, observation.validation_id)
+        ]
+        if observation.status == "fail" and not related:
+            related = [
+                _error(
+                    "FAST-RUN-001",
+                    "validation reported failure",
+                    validation_id=observation.validation_id,
+                )
+            ]
+        validations.append(
+            {
+                "validation_id": observation.validation_id,
+                "case_id": observation.case_id,
+                "status": observation.status,
+                "reproduction_argv": list(reproduction_argv[observation.validation_id]),
+                "metrics": [
+                    {
+                        "name": "elapsed",
+                        "value": result.elapsed_ns,
+                        "value_type": "integer",
+                        "unit": "nanoseconds",
+                    },
+                    {
+                        "name": "completed",
+                        "value": observation.completed,
+                        "value_type": "integer",
+                        "unit": "count",
+                    },
+                ],
+                "errors": [
+                    {"code": error.code, "message": error.message, "context": dict(error.context)} for error in related
+                ]
+                if observation.status == "fail"
+                else [],
+                "attachments": [],
+            }
+        )
+    return validations
 
 
 def load_manifest(manifest_bytes: bytes, schema_bytes: bytes) -> FastManifest:
@@ -251,6 +314,7 @@ def execute_checks(
             adapter_errors.append(
                 _error("FAST-ADAPTER-001", "required validation adapter is missing", validation_id=check.validation_id)
             )
+            observations.append(_completed_observation(check, "fail", "contract-invalid"))
             continue
         try:
             result = adapter(check)

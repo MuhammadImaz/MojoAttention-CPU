@@ -27,8 +27,16 @@
   "allOf": [
     {
       "if": {"properties": {"schema_version": {"const": "2.0.0"}}},
-      "then": {"required": ["suite_manifest_digest"]},
-      "else": {"not": {"required": ["suite_manifest_digest"]}}
+      "then": {"required": ["suite_manifest_digest", "config_digest", "protocol_digest"]},
+      "else": {
+        "not": {
+          "anyOf": [
+            {"required": ["suite_manifest_digest"]},
+            {"required": ["config_digest"]},
+            {"required": ["protocol_digest"]}
+          ]
+        }
+      }
     }
   ],
   "properties": {
@@ -39,6 +47,8 @@
     "trusted_base_revision": {"$ref": "#/$defs/revision"},
     "contract_digest": {"$ref": "#/$defs/digest"},
     "suite_manifest_digest": {"$ref": "#/$defs/digest"},
+    "config_digest": {"$ref": "#/$defs/digest"},
+    "protocol_digest": {"$ref": "#/$defs/digest"},
     "requirement_ids": {"$ref": "#/$defs/ids"},
     "capability_ids": {"$ref": "#/$defs/ids"},
     "exclusions": {"$ref": "#/$defs/ids"},

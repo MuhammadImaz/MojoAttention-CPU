@@ -174,6 +174,9 @@ class EvidenceContractTests(unittest.TestCase):
             manifest = json.loads((complete / "evidence.json").read_bytes())
             self.assertEqual("2.0.0", manifest["schema_version"])
             self.assertEqual(DIGEST, manifest["suite_manifest_digest"])
+            missing = dict(manifest)
+            missing.pop("suite_manifest_digest")
+            self.assertTrue(tuple(Draft202012Validator(self.schema).iter_errors(missing)))
 
     def test_create_finalize_verify_is_atomic_and_hash_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

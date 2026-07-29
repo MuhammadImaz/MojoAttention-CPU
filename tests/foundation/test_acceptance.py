@@ -123,8 +123,15 @@ class AcceptanceContractTests(unittest.TestCase):
         version_two = unsigned_contract()
         version_two["schema_version"] = "2.0.0"
         version_two["suite_manifest_digest"] = "sha256:" + ("a" * 64)
+        version_two["config_digest"] = "sha256:" + ("b" * 64)
+        version_two["protocol_digest"] = "sha256:" + ("c" * 64)
         version_two = issue_contract(version_two)
         self.assertEqual((), validate_contract(version_two, ROOT, self.context()))
+        for field in ("suite_manifest_digest", "config_digest", "protocol_digest"):
+            missing = dict(version_two)
+            missing.pop(field)
+            missing = issue_contract(missing)
+            self.assertIn("ACPT-001", self.codes(missing), field)
 
     def test_unknown_missing_and_malformed_fields_fail_stably(self) -> None:
         for mutation in ("unknown", "missing", "version", "revision", "digest"):
