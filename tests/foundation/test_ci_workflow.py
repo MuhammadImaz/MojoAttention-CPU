@@ -41,6 +41,23 @@ class WorkflowPolicyTests(unittest.TestCase):
         for command in ("pytest", "ruff check", "ruff format --check", "mypy"):
             self.assertIn(command, quality)
 
+    def test_quality_is_non_recursive_fast_equivalent_and_preserves_foundation_gates(self) -> None:
+        quality = (ROOT / "scripts" / "quality.sh").read_text(encoding="utf-8")
+        self.assertNotIn("mojoattention validate --suite fast", quality)
+        self.assertIn("FAST_EQUIVALENCE_BOUNDARY", quality)
+        for gate in (
+            "lock --check",
+            "mojoattention privacy",
+            "mojoattention authority",
+            "mojoattention contract validate",
+            "pytest -q",
+            "ruff check .",
+            "ruff format --check .",
+            "mypy",
+            "bash -n scripts/*.sh",
+        ):
+            self.assertIn(gate, quality)
+
 
 if __name__ == "__main__":
     unittest.main()

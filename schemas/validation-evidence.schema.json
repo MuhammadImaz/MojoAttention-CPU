@@ -37,7 +37,7 @@
     "evidence_digest"
   ],
   "properties": {
-    "schema_version": {"const": "1.0.0"},
+    "schema_version": {"enum": ["1.0.0", "2.0.0"]},
     "run_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
     "suite_id": {"$ref": "#/$defs/id"},
     "source_revision": {"$ref": "#/$defs/revision"},
@@ -64,6 +64,7 @@
       ]
     },
     "contract_digest": {"$ref": "#/$defs/digest"},
+    "suite_manifest_digest": {"$ref": "#/$defs/digest"},
     "config_digest": {"$ref": "#/$defs/digest"},
     "protocol_digest": {"$ref": "#/$defs/digest"},
     "declared_case_ids": {
@@ -108,6 +109,11 @@
     "evidence_digest": {"$ref": "#/$defs/digest"}
   },
   "allOf": [
+    {
+      "if": {"properties": {"schema_version": {"const": "2.0.0"}}},
+      "then": {"required": ["suite_manifest_digest"]},
+      "else": {"not": {"required": ["suite_manifest_digest"]}}
+    },
     {
       "if": {
         "required": ["verdict"],
@@ -190,7 +196,8 @@
       "properties": {
         "os": {"$ref": "#/$defs/id"},
         "architecture": {"$ref": "#/$defs/id"},
-        "python_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"}
+        "python_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "reference_host": {"enum": ["unverified", "documented-reference"]}
       }
     },
     "metric": {

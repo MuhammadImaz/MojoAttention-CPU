@@ -8,7 +8,7 @@ import sys
 import tempfile
 from contextlib import suppress
 from dataclasses import asdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 from mojoattention.config import ProjectPolicy
@@ -22,6 +22,20 @@ from mojoattention.validation.evidence import (
     read_approved_attachment,
     verify_evidence,
 )
+from mojoattention.validation.fast import (
+    FAST_PROTOCOL_DIGEST,
+    AdapterResult,
+    CheckAdapter,
+    FastCheck,
+    FastError,
+    FastRunResult,
+    evidence_validations,
+    execute_checks,
+    load_manifest,
+    run_bounded_argv,
+    verify_fast_evidence,
+)
+from mojoattention.validation.fast_canaries import execute_false_green_canary
 from mojoattention.validation.host import probe
 from mojoattention.validation.identity import detect_identity, evaluate_identity
 from mojoattention.validation.paths import contains
@@ -180,6 +194,391 @@ def _candidate_blob(root: Path, revision: str, path: str) -> bytes:
     return result.stdout
 
 
+def _trusted_blob(root: Path, revision: str, path: str) -> bytes:
+    return _candidate_blob(root, revision, path)
+
+
+def _fast_contract_inventory(contract: dict[str, Any], manifest: Any) -> None:
+    if contract.get("schema_version") != "2.0.0":
+        raise ValueError("Fast requires Acceptance Contract v2")
+    expected = [
+        {"validation_id": check.validation_id, "required_count": check.required_count} for check in manifest.checks
+    ]
+    suites = contract.get("required_suites")
+    if suites != [{"suite_id": "fast", "validations": expected, "required_total": manifest.required_total}]:
+        raise ValueError("Acceptance Contract Fast inventory differs from the trusted manifest")
+    bindings = {
+        "suite_manifest_digest": manifest.manifest_digest,
+        "config_digest": manifest.config_digest,
+    }
+    for field, expected_value in bindings.items():
+        if contract.get(field) != expected_value:
+            raise ValueError(f"Acceptance Contract {field} differs from the trusted manifest")
+
+
+def _foundation_adapters(
+    root: Path,
+    manifest: Any,
+    *,
+    authority_valid: bool,
+    diagnostics: dict[str, bytes] | None = None,
+) -> dict[str, CheckAdapter]:
+    """Bind foundation IDs to work already validated or to bounded executors."""
+
+    adapters: dict[str, CheckAdapter] = {}
+    for check in manifest.checks:
+        if check.kind != "foundation":
+            continue
+        if check.validation_id == "FAST-003":
+
+            def static_adapter(item: FastCheck) -> AdapterResult:
+                committed = subprocess.check_output(
+                    ["git", "ls-tree", "-r", "-z", "--name-only", "HEAD"],
+                    cwd=root,
+                    env={"PATH": os.environ.get("PATH", ""), "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1"},
+                )
+                python_paths = tuple(
+                    f"./{path}"
+                    for raw in committed.split(b"\0")
+                    if raw
+                    for path in (raw.decode("utf-8", errors="strict"),)
+                    if path.endswith(".py")
+                    and not path.startswith("/")
+                    and "\\" not in path
+                    and all(part not in {"", ".", ".."} for part in PurePosixPath(path).parts)
+                )
+                if not python_paths:
+                    return AdapterResult.failed(
+                        item,
+                        "contract-invalid",
+                        FastError("FAST-STATIC-001", "candidate commit contains no bounded Python inputs", {}),
+                    )
+                chunks: list[tuple[str, ...]] = []
+                current: list[str] = []
+                current_bytes = 0
+                for path in python_paths:
+                    encoded_size = len(path.encode("utf-8")) + 1
+                    if current and (len(current) >= 256 or current_bytes + encoded_size > 60_000):
+                        chunks.append(tuple(current))
+                        current = []
+                        current_bytes = 0
+                    current.append(path)
+                    current_bytes += encoded_size
+                chunks.append(tuple(current))
+                processes = [
+                    run_bounded_argv(
+                        ("ruff", "check", *chunk),
+                        root,
+                        manifest.runner_config,
+                    )
+                    for chunk in chunks
+                ]
+                if diagnostics is not None:
+                    diagnostics[item.validation_id] = canonical_bytes(
+                        {
+                            "chunks": [
+                                {
+                                    "returncode": process.returncode,
+                                    "output_truncated": process.output_truncated,
+                                    "stdout": process.stdout.decode("utf-8", errors="replace"),
+                                    "stderr": process.stderr.decode("utf-8", errors="replace"),
+                                }
+                                for process in processes
+                            ],
+                        },
+                        newline=True,
+                    )
+                if failed := next((process for process in processes if process.error is not None), None):
+                    assert failed.error is not None
+                    return AdapterResult.failed(item, failed.failure_class or "product-fail", failed.error)
+                return AdapterResult.passed(item)
+
+            adapters[check.validation_id] = static_adapter
+        elif check.validation_id == "FAST-004":
+
+            def import_adapter(item: FastCheck) -> AdapterResult:
+                process = run_bounded_argv(
+                    (sys.executable, "-c", "import mojoattention"),
+                    root,
+                    manifest.runner_config,
+                )
+                if diagnostics is not None:
+                    diagnostics[item.validation_id] = canonical_bytes(
+                        {
+                            "returncode": process.returncode,
+                            "output_truncated": process.output_truncated,
+                            "stdout": process.stdout.decode("utf-8", errors="replace"),
+                            "stderr": process.stderr.decode("utf-8", errors="replace"),
+                        },
+                        newline=True,
+                    )
+                if process.error is not None:
+                    return AdapterResult.failed(item, process.failure_class or "product-fail", process.error)
+                return AdapterResult.passed(item)
+
+            adapters[check.validation_id] = import_adapter
+        elif check.validation_id == "FAST-005" and not authority_valid:
+            adapters[check.validation_id] = lambda item: AdapterResult.failed(
+                item,
+                "contract-invalid",
+                FastError("FAST-AUTH-001", "candidate authority controls are invalid", {}),
+            )
+        elif check.validation_id == "FAST-006":
+
+            def path_adapter(item: FastCheck) -> AdapterResult:
+                committed_paths = subprocess.check_output(
+                    ["git", "ls-tree", "-r", "-z", "--name-only", "HEAD"],
+                    cwd=root,
+                    env={"PATH": os.environ.get("PATH", ""), "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1"},
+                )
+                forbidden = find_forbidden_tracked_paths(committed_paths)
+                if forbidden:
+                    return AdapterResult.failed(
+                        item,
+                        "contract-invalid",
+                        FastError(
+                            "FAST-PATH-001",
+                            "tracked paths violate public privacy policy",
+                            {"count": len(forbidden)},
+                        ),
+                    )
+                return AdapterResult.passed(item)
+
+            adapters[check.validation_id] = path_adapter
+        else:
+            # FAST-001/002 were validated from immutable contract/schema bytes
+            # before this map is created. FAST-007 is closed only after the
+            # shared renderer and independent evidence verifier succeed below.
+            adapters[check.validation_id] = AdapterResult.passed
+    return adapters
+
+
+def _attribute_protected_errors(
+    result: FastRunResult,
+    protected_errors: tuple[ProtectedError, ...],
+) -> FastRunResult:
+    if not protected_errors:
+        return result
+    index = next(
+        index for index, observation in enumerate(result.observations) if observation.validation_id == "FAST-013"
+    )
+    observation = result.observations[index]
+    rejected = type(observation)(
+        observation.validation_id,
+        observation.case_id,
+        observation.seed,
+        observation.selected,
+        observation.collected,
+        observation.completed,
+        observation.skipped,
+        observation.xfailed,
+        observation.deselected,
+        observation.collection_errors,
+        observation.shard_index,
+        observation.shard_total,
+        "fail",
+        "contract-invalid",
+    )
+    errors = tuple(
+        FastError(item.code, item.message, {**item.context, "validation_id": "FAST-013"}) for item in protected_errors
+    )
+    return FastRunResult(
+        "contract-invalid",
+        (*result.observations[:index], rejected, *result.observations[index + 1 :]),
+        errors,
+        result.elapsed_ns,
+    )
+
+
+def run_fast_validation(
+    root: Path,
+    contract_path: str,
+    output: Path,
+    *,
+    trusted_base_path: str,
+    trusted_policy_path: str,
+    trusted_policy_schema_path: str,
+    authorization_path: str,
+    authorization_schema_path: str,
+    approval_anchor_revision: str,
+) -> tuple[str, Path, tuple[FastError, ...]]:
+    """Run the authenticated Fast orchestration and publish one verified closure."""
+
+    writer: EvidenceWriter | None = None
+    contract_bytes = _read_protected_caller_bytes(root, contract_path)
+    contract = json.loads(contract_bytes)
+    if not isinstance(contract, dict):
+        raise ValueError("Acceptance Contract must be an object")
+    candidate_revision = str(contract.get("source_revision", ""))
+    trusted_base_revision = str(contract.get("trusted_base_revision", ""))
+    _require_candidate_checkout(root, candidate_revision)
+
+    trusted_base = json.loads(_read_protected_caller_bytes(root, trusted_base_path))
+    if not isinstance(trusted_base, dict) or set(trusted_base) != {
+        "trusted_base_revision",
+        "trusted_base_tree",
+        "trusted_policy_identity",
+        "trusted_policy_digest",
+        "trusted_policy_schema_digest",
+    }:
+        raise ValueError("trusted-base anchor is invalid")
+    if trusted_base["trusted_base_revision"] != trusted_base_revision:
+        raise ValueError("contract trusted base differs from authenticated anchor")
+    base_tree = subprocess.run(
+        ["git", "rev-parse", f"{trusted_base_revision}^{{tree}}"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+        env={"PATH": os.environ.get("PATH", ""), "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1"},
+    )
+    if base_tree.returncode != 0 or base_tree.stdout.strip() != trusted_base["trusted_base_tree"]:
+        raise ValueError("authenticated trusted-base tree differs from Git")
+    policy_bytes = _read_protected_caller_bytes(root, trusted_policy_path)
+    policy_schema = _read_protected_caller_bytes(root, trusted_policy_schema_path)
+    trusted_policy = TrustedPolicyInput(
+        policy_bytes,
+        policy_schema,
+        str(trusted_base["trusted_policy_identity"]),
+        str(trusted_base["trusted_policy_digest"]),
+        str(trusted_base["trusted_policy_schema_digest"]),
+    )
+    authorization_bytes = _read_protected_caller_bytes(root, authorization_path)
+    authorization_schema = _read_protected_caller_bytes(root, authorization_schema_path)
+    authorization_envelope, authorization_errors = load_trusted_authorization(
+        authorization_bytes,
+        authorization_schema,
+    )
+    if authorization_errors or authorization_envelope is None:
+        raise ValueError("protected-change authorization is invalid")
+    authorization = AuthorizationContext(
+        envelope=authorization_envelope,
+        approval_anchor_revision=approval_anchor_revision,
+        contract_digest=str(contract.get("contract_digest", "")),
+    )
+
+    manifest_bytes = _trusted_blob(root, trusted_base_revision, "contracts/validation-suites/fast.json")
+    manifest_schema = _trusted_blob(root, trusted_base_revision, "schemas/validation-suite.schema.json")
+    # Candidate-owned authority and evidence interfaces are acquired once from
+    # the bound commit, never from mutable worktree bytes after execution.
+    authority_bytes = _candidate_blob(root, candidate_revision, "contracts/agent-authority.json")
+    authority_schema = _candidate_blob(root, candidate_revision, "schemas/agent-authority.schema.json")
+    acceptance_schema = _candidate_blob(root, candidate_revision, "schemas/acceptance-contract.schema.json")
+    evidence_schema = _candidate_blob(root, candidate_revision, "schemas/validation-evidence.schema.json")
+    authority_manifest = json.loads(authority_bytes)
+    authority_errors = validate_manifest(authority_manifest, root, schema_bytes=authority_schema)
+    if authority_errors:
+        raise ValueError("candidate authority controls are invalid")
+    json.loads(evidence_schema)
+
+    manifest = load_manifest(manifest_bytes, manifest_schema)
+    _fast_contract_inventory(contract, manifest)
+    if contract.get("protocol_digest") != FAST_PROTOCOL_DIGEST:
+        raise ValueError("Acceptance Contract protocol_digest differs from the runner protocol")
+    contract_errors = validate_contract(
+        contract,
+        root,
+        ContractContext(
+            source_revision=candidate_revision,
+            trusted_base_revision=trusted_base_revision,
+            prior_validation_identity=None,
+        ),
+        schema_bytes=acceptance_schema,
+    )
+    if contract_errors:
+        raise ValueError("Acceptance Contract is invalid")
+
+    bounded_context = {
+        "suite_id": manifest.suite_id,
+        "contract_digest": contract["contract_digest"],
+        "suite_manifest_digest": manifest.manifest_digest,
+        "config_digest": manifest.config_digest,
+        "protocol_digest": FAST_PROTOCOL_DIGEST,
+        "declared_case_ids": [item.case_id for item in manifest.checks],
+        "declared_validation_ids": [item.validation_id for item in manifest.checks],
+        "seed": manifest.seed,
+        "producer": {"name": "mojoattention", "version": "1.0.0"},
+        "environment": {
+            "os": sys.platform.replace("_", "-"),
+            "architecture": os.uname().machine.replace("_", "-"),
+            "python_version": ".".join(str(item) for item in sys.version_info[:3]),
+            "reference_host": "unverified",
+        },
+    }
+    trusted_context, protected_errors = evaluate_and_compose_trusted_context(
+        root,
+        trusted_base_revision,
+        candidate_revision,
+        trusted_policy,
+        contract["contract_digest"],
+        bounded_context,
+        authorization,
+    )
+    if trusted_context is None:
+        raise ValueError("trusted Fast controls could not be acquired")
+
+    diagnostics: dict[str, bytes] = {}
+    adapters = _foundation_adapters(
+        root,
+        manifest,
+        authority_valid=not authority_errors,
+        diagnostics=diagnostics,
+    )
+    with tempfile.TemporaryDirectory(prefix="mojoattention-fast-canaries-") as canary_directory:
+
+        def canary_adapter(check: FastCheck) -> AdapterResult:
+            return execute_false_green_canary(check, Path(canary_directory), trusted_policy)
+
+        for item in manifest.checks:
+            if item.kind == "canary":
+                adapters[item.validation_id] = canary_adapter
+        result = execute_checks(manifest, adapters)
+    if protected_errors:
+        result = _attribute_protected_errors(result, protected_errors)
+    _require_candidate_checkout(root, candidate_revision)
+    try:
+        writer = EvidenceWriter(output, trusted_context)
+        attachment_paths = {
+            validation_id: (f"diagnostics/{validation_id.lower()}.json",) for validation_id in diagnostics
+        }
+        leaves = [
+            writer.snapshot_bytes(
+                payload,
+                attachment_paths[validation_id][0],
+                "application/json",
+            )
+            for validation_id, payload in sorted(diagnostics.items())
+        ]
+        validations = evidence_validations(
+            result,
+            {item.validation_id: item.reproduction_argv for item in manifest.checks},
+            reference_target_ns=manifest.reference_target_ns,
+            attachment_paths=attachment_paths,
+        )
+        complete = writer.finalize(
+            verdict=result.verdict,
+            validations=validations,
+            attachments=leaves,
+            schema_path=evidence_schema,
+        )
+        verified = verify_evidence(complete, evidence_schema)
+        if verified.errors or verified.manifest is None:
+            raise OSError("published Fast evidence failed independent verification")
+        if closure_errors := verify_fast_evidence(
+            manifest,
+            result,
+            verified.manifest,
+            attachment_paths=attachment_paths,
+        ):
+            raise OSError(closure_errors[0].message)
+        _require_candidate_checkout(root, candidate_revision)
+        return result.verdict, complete, result.errors
+    finally:
+        if writer is not None:
+            with suppress(OSError):
+                writer.abort()
+
+
 def _require_candidate_checkout(root: Path, revision: str) -> None:
     environment = {
         "PATH": os.environ.get("PATH", ""),
@@ -271,11 +670,91 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_produce.add_argument("--approval-anchor-revision", metavar="SHA")
     evidence_produce.add_argument("--output", default="reports/runs", metavar="PATH")
     evidence_produce.add_argument("--json", dest="json_path", default="-", metavar="PATH")
+    validate = commands.add_parser("validate")
+    validate.add_argument("--suite", choices=("fast",), required=True)
+    validate.add_argument("--contract", dest="contract_path", required=True, metavar="PATH")
+    validate.add_argument("--trusted-base", required=True, metavar="PATH")
+    validate.add_argument("--trusted-policy", required=True, metavar="PATH")
+    validate.add_argument("--trusted-policy-schema", required=True, metavar="PATH")
+    validate.add_argument("--authorization", required=True, metavar="PATH")
+    validate.add_argument("--trusted-authorization-schema", required=True, metavar="PATH")
+    validate.add_argument("--approval-anchor-revision", required=True, metavar="SHA")
+    validate.add_argument("--output", default="reports/runs", metavar="PATH")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "validate":
+        fast_payload: dict[str, Any]
+        if args.output != "reports/runs":
+            fast_payload = {
+                "errors": [
+                    {
+                        "code": "FAST-CLI-001",
+                        "message": "output must be the approved reports/runs root",
+                        "context": {"output": args.output},
+                    }
+                ],
+                "non_evidence": True,
+                "verdict": "contract-invalid",
+            }
+            print("FAST-CLI-001 contract-invalid: output root rejected", file=sys.stderr)
+            exit_code = EVIDENCE_EXIT_CODES["contract-invalid"]
+        else:
+            try:
+                root = _root()
+                verdict, complete, fast_errors = run_fast_validation(
+                    root,
+                    args.contract_path,
+                    root / "reports" / "runs",
+                    trusted_base_path=args.trusted_base,
+                    trusted_policy_path=args.trusted_policy,
+                    trusted_policy_schema_path=args.trusted_policy_schema,
+                    authorization_path=args.authorization,
+                    authorization_schema_path=args.trusted_authorization_schema,
+                    approval_anchor_revision=args.approval_anchor_revision,
+                )
+                fast_payload = {
+                    "errors": [
+                        {"code": item.code, "message": item.message, "context": dict(item.context)}
+                        for item in fast_errors
+                    ],
+                    "run": str(complete.relative_to(root)),
+                    "verdict": verdict,
+                }
+                exit_code = EVIDENCE_EXIT_CODES[verdict]
+            except KeyError, TypeError, json.JSONDecodeError, ValueError:
+                fast_payload = {
+                    "errors": [
+                        {
+                            "code": "FAST-CLI-002",
+                            "message": "Fast contract or trusted controls are invalid",
+                            "context": {"phase": "orchestrate"},
+                        }
+                    ],
+                    "non_evidence": True,
+                    "verdict": "contract-invalid",
+                }
+                print("FAST-CLI-002 contract-invalid: Fast orchestration rejected", file=sys.stderr)
+                exit_code = EVIDENCE_EXIT_CODES["contract-invalid"]
+            except OSError, RuntimeError:
+                fast_payload = {
+                    "errors": [
+                        {
+                            "code": "FAST-CLI-003",
+                            "message": "Fast execution or publication failed",
+                            "context": {"phase": "orchestrate"},
+                        }
+                    ],
+                    "non_evidence": True,
+                    "verdict": "infrastructure-invalid",
+                }
+                print("FAST-CLI-003 infrastructure-invalid: Fast orchestration failed", file=sys.stderr)
+                exit_code = EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+        if not _write_payload(canonical_bytes(fast_payload, newline=True).decode(), "-"):
+            return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+        return exit_code
     if args.command == "evidence":
         if args.evidence_command == "produce":
             writer: EvidenceWriter | None = None

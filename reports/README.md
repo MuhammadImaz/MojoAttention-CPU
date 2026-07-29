@@ -2,6 +2,13 @@
 
 Generated runs are ignored. Curated release evidence must be added explicitly.
 
+Fast writes only below the repository-relative `reports/runs` root and chooses
+the child run identity internally. Inspect a published closure with
+`scripts/run.sh mojoattention evidence inspect --run
+reports/runs/<generated-id>.complete --json -`. A `.staging` directory, a raw
+command log, or a directory missing independent hash-closure verification is
+non-consumable and must never be presented as passing evidence.
+
 ## Integrity-bound validation runs
 
 A producer exclusively creates `<run-id>.staging`, durably writes `staging.json`,

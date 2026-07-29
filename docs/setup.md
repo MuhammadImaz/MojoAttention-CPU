@@ -96,3 +96,91 @@ read-only inspection. Its stable exits are pass `0`, product failure `1`,
 infrastructure-invalid `2`, contract-invalid `3`, and invalid usage `64`.
 Branch-local generation is feedback; later CI and Agent Loop stories own trusted
 retention and governance.
+
+## Fast foundation validation
+
+Fast has one public execution surface:
+
+```bash
+scripts/run.sh mojoattention validate \
+  --suite fast \
+  --contract /path/outside/checkout/issued-fast-contract.json \
+  --trusted-base /path/outside/checkout/trusted-base-anchor.json \
+  --trusted-policy /path/outside/checkout/protected-assets.json \
+  --trusted-policy-schema /path/outside/checkout/protected-assets.schema.json \
+  --authorization /path/outside/checkout/authorization.json \
+  --trusted-authorization-schema /path/outside/checkout/protected-change-authorization.schema.json \
+  --approval-anchor-revision <40-hex-independent-anchor> \
+  --output reports/runs
+```
+
+All six trust inputs and the contract must be acquired outside the candidate
+checkout. The trusted-base anchor binds the exact base revision/tree and
+trusted-policy Git identity/digests; the human authorization binds that base,
+the candidate revision/tree, contract digest, change-set digest, protected
+paths, and independent approval anchor. The contract must be an externally issued Acceptance Contract v2 bound to the
+current candidate commit, its trusted base, and the exact
+`suite_manifest_digest`, `config_digest`, `protocol_digest`, ordered
+`FAST-001`–`FAST-013` inventory, counts, cases, seed, and complete shard in the
+trusted `contracts/validation-suites/fast.json`. The contract path must be
+outside the candidate checkout. `reports/runs` is the only accepted output
+argument. The producer chooses a unique child identity; callers cannot select,
+resume, or name a run.
+
+Canonical JSON is written to stdout and diagnostics to stderr. Exits are `0`
+pass, `1` product failure, `2` infrastructure invalid, `3` contract invalid,
+and `64` invalid CLI usage. A completed JSON response names a relative
+`reports/runs/<generated-id>.complete` directory containing authoritative
+`manifest.json`, deterministic `report.md`, and the hash-closure files. Inspect
+it independently:
+
+```bash
+scripts/run.sh mojoattention evidence inspect \
+  --run reports/runs/<generated-id>.complete \
+  --json -
+```
+
+Every record includes its stable validation ID, typed error when failed, exact
+reproduction argv, structural collection counts, seed/shard identity, and
+integer `run-elapsed` in nanoseconds. `reference-target` is the three-minute
+reference-machine target, not a portable deadline and never permission to
+remove checks.
+
+To demonstrate false-green rejection without changing the checkout, run one
+isolated mutation/control test, then Fast and independent inspection:
+
+```bash
+scripts/run.sh pytest -q \
+  tests/foundation/test_fast_canaries.py \
+  -k workflow_omission_tricks
+scripts/run.sh mojoattention validate \
+  --suite fast \
+  --contract /path/outside/checkout/issued-fast-contract.json \
+  --trusted-base /path/outside/checkout/trusted-base-anchor.json \
+  --trusted-policy /path/outside/checkout/protected-assets.json \
+  --trusted-policy-schema /path/outside/checkout/protected-assets.schema.json \
+  --authorization /path/outside/checkout/authorization.json \
+  --trusted-authorization-schema /path/outside/checkout/protected-change-authorization.schema.json \
+  --approval-anchor-revision <40-hex-independent-anchor> \
+  --output reports/runs
+scripts/run.sh mojoattention evidence inspect \
+  --run reports/runs/<generated-id>.complete \
+  --json -
+```
+
+The first command proves disabled/conditional checks, swallowed exits, empty
+selection, deselection, skips, xfails, and placeholders are rejected for
+`FAST-009`, followed by an unchanged passing control. The valid Fast run then
+publishes one independently inspectable closure. Incomplete staging, raw
+successful commands, partial shards, or unverified/tampered output are not
+evidence.
+
+Fast is foundation feedback only: contracts, schemas, static analysis, imports,
+provider-neutral authority discovery, path policy, report rendering, and
+false-green canaries. It is not kernel correctness, backend routing, model,
+training, benchmark, hosted-governance, or release evidence. Later stories add
+those tiers through protected versioned changes; they do not silently change
+Fast's public identity. Candidate-local edits cannot self-approve the manifest,
+schemas, policy, runner, tests, or workflow because trust-bearing controls are
+read from authenticated Git state and protected-change authorization is
+evaluated separately.

@@ -85,6 +85,29 @@ class FastManifestContractTests(unittest.TestCase):
         scopes = {scope["category"]: tuple(scope["paths"]) for scope in policy["protected_scopes"]}
         self.assertIn("contracts/validation-suites", scopes["required-check-policy"])
         self.assertIn("schemas", scopes)
+        evaluator = scopes["protected-evaluator"]
+        for path in (
+            "src/mojoattention/cli/main.py",
+            "src/mojoattention/validation/fast.py",
+            "src/mojoattention/validation/fast_canaries.py",
+        ):
+            self.assertIn(path, evaluator)
+        self.assertIn("scripts/quality.sh", scopes["required-check-policy"])
+
+    def test_provider_neutral_authority_protects_fast_gate_without_granting_approval(self) -> None:
+        authority = json.loads((ROOT / "contracts" / "agent-authority.json").read_bytes())
+        for path in (
+            "contracts/validation-suites",
+            "schemas/validation-suite.schema.json",
+            "src/mojoattention/cli/main.py",
+            "src/mojoattention/validation/fast.py",
+            "src/mojoattention/validation/fast_canaries.py",
+            "scripts/quality.sh",
+            ".github/workflows/foundation-quality.yml",
+        ):
+            self.assertIn(path, authority["protected_paths"])
+        self.assertTrue(all(not role["can_approve_protected_changes"] for role in authority["roles"]))
+        self.assertTrue(all(not role["can_approve_final_merge"] for role in authority["roles"]))
 
 
 if __name__ == "__main__":

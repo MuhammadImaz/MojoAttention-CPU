@@ -386,7 +386,8 @@ class EvidenceWriter:
             self._runs_fd = -1
             raise
         self._sealed = False
-        staging = {"schema_version": "1.0.0", "run_id": self.run_id, "lifecycle": "staging"}
+        evidence_version = "2.0.0" if "suite_manifest_digest" in self.context else "1.0.0"
+        staging = {"schema_version": evidence_version, "run_id": self.run_id, "lifecycle": "staging"}
         try:
             self._write("staging.json", canonical_bytes(staging, newline=True))
             os.fsync(self._staging_fd)
@@ -519,7 +520,7 @@ class EvidenceWriter:
         manifest = self.context
         manifest.update(
             {
-                "schema_version": "1.0.0",
+                "schema_version": "2.0.0" if "suite_manifest_digest" in manifest else "1.0.0",
                 "run_id": self.run_id,
                 "lifecycle": "complete",
                 "verdict": verdict,

@@ -152,6 +152,41 @@ class EvidenceContractTests(unittest.TestCase):
                 target["unknown"] = True  # type: ignore[index]
             self.assertTrue(list(Draft202012Validator(self.schema).iter_errors(changed)), path)
 
+    def test_v2_evidence_requires_and_binds_suite_manifest_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "approved"
+            source_root.mkdir()
+            source = source_root / "result.txt"
+            source.write_text("stable evidence\n", encoding="utf-8")
+            writer = EvidenceWriter._for_test(
+                root / "runs",
+                context(suite_manifest_digest=DIGEST),
+                "e" * 32,
+            )
+            leaf = writer.snapshot(source, "artifacts/result.txt", "text/plain", (source_root,))
+            complete = writer.finalize(
+                verdict="pass",
+                validations=[validation()],
+                attachments=[leaf],
+                schema_path=SCHEMA,
+            )
+            manifest = json.loads((complete / "evidence.json").read_bytes())
+            self.assertEqual("2.0.0", manifest["schema_version"])
+            self.assertEqual(DIGEST, manifest["suite_manifest_digest"])
+            missing = dict(manifest)
+            missing.pop("suite_manifest_digest")
+            self.assertTrue(tuple(Draft202012Validator(self.schema).iter_errors(missing)))
+
+    def test_environment_records_reference_host_classification_without_enforcing_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            complete = self.produce(Path(temporary))
+            manifest = json.loads((complete / "evidence.json").read_bytes())
+        manifest["environment"]["reference_host"] = "unverified"
+        self.assertEqual([], list(Draft202012Validator(self.schema).iter_errors(manifest)))
+        manifest["environment"]["reference_host"] = "claimed-without-authority"
+        self.assertTrue(list(Draft202012Validator(self.schema).iter_errors(manifest)))
+
     def test_create_finalize_verify_is_atomic_and_hash_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

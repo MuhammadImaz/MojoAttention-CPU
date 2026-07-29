@@ -62,9 +62,10 @@ def issue_contract(contract: dict[str, object]) -> dict[str, object]:
     return issued
 
 
-def _schema_errors(instance: object, schema_path: Path, code: str) -> list[ContractError]:
+def _schema_errors(instance: object, schema_source: Path | bytes, code: str) -> list[ContractError]:
     try:
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        raw = schema_source if isinstance(schema_source, bytes) else schema_source.read_bytes()
+        schema = json.loads(raw)
         Draft202012Validator.check_schema(schema)
     except (OSError, json.JSONDecodeError, TypeError, SchemaError) as error:
         return [ContractError(code, "schema cannot be loaded or is invalid", {"error": str(error)})]
@@ -231,8 +232,13 @@ def validate_contract(
     contract: object,
     root: Path,
     context: ContractContext,
+    *,
+    schema_bytes: bytes | None = None,
 ) -> tuple[ContractError, ...]:
-    schema_errors = _schema_errors(contract, root / "schemas" / "acceptance-contract.schema.json", "ACPT-001")
+    schema_source: Path | bytes = (
+        schema_bytes if schema_bytes is not None else root / "schemas" / "acceptance-contract.schema.json"
+    )
+    schema_errors = _schema_errors(contract, schema_source, "ACPT-001")
     if schema_errors:
         return tuple(schema_errors)
     assert isinstance(contract, dict)

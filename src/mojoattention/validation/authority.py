@@ -43,8 +43,15 @@ def _canonical_target(path: str, root: Path) -> bool:
     return is_canonical_repo_path(path, root, require_exists=False)
 
 
-def validate_manifest(manifest: Any, root: Path) -> tuple[AuthorityError, ...]:
-    schema = json.loads((root / "schemas" / "agent-authority.schema.json").read_text(encoding="utf-8"))
+def validate_manifest(
+    manifest: Any,
+    root: Path,
+    *,
+    schema_bytes: bytes | None = None,
+) -> tuple[AuthorityError, ...]:
+    schema = json.loads(
+        schema_bytes if schema_bytes is not None else (root / "schemas" / "agent-authority.schema.json").read_bytes()
+    )
     schema_errors = sorted(Draft202012Validator(schema).iter_errors(manifest), key=lambda item: list(item.path))
     if schema_errors:
         classified: list[AuthorityError] = []
