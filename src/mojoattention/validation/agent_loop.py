@@ -12,12 +12,16 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal, NoReturn, cast
 
 from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[import-untyped]
 
-from mojoattention.validation.authority import authorize_write
+from mojoattention.validation.acceptance import validate_contract
+from mojoattention.validation.authority import authorize_write, validate_manifest
+from mojoattention.validation.evidence import verify_evidence
+from mojoattention.validation.identity import require_clean_candidate
 from mojoattention.validation.paths import contains
+from mojoattention.validation.protected_assets import evaluate_and_compose_trusted_context
 
 SchemaSource = Path | bytes
 LoopStatus = Literal[
@@ -204,6 +208,41 @@ class RetryDecision:
     errors: tuple[AgentLoopError, ...]
 
 
+@dataclass(frozen=True)
+class ControlAcquisitionRequest:
+    contract: dict[str, Any]
+    contract_schema: bytes
+    contract_context: object
+    authority_manifest: dict[str, Any]
+    authority_schema: bytes
+    evidence_schema: bytes
+    assigned_role: str
+    trusted_base_revision: str
+    candidate_revision: str
+    trusted_policy: object
+    authorization: object
+    bounded_context: dict[str, Any]
+    control_source_kind: str
+
+
+@dataclass(frozen=True)
+class AuthenticatedLoopControls:
+    contract_digest: str
+    source_revision: str
+    source_tree: str
+    trusted_base_revision: str
+    trusted_base_tree: str
+    assigned_role: str
+    allowed_paths: tuple[str, ...]
+    protected_paths: tuple[str, ...]
+    retry_budget: int
+    suite_id: str
+    config_digest: str
+    protocol_digest: str
+    expected_validation_ids: tuple[str, ...]
+    evidence_schema: bytes
+
+
 class AgentLoopContractError(ValueError):
     pass
 
@@ -261,7 +300,7 @@ def validate_agent_loop_record(record: object, schema_source: SchemaSource) -> t
     return tuple(errors)
 
 
-def _reject(code: str, message: str, **context: object) -> None:
+def _reject(code: str, message: str, **context: object) -> NoReturn:
     error = AgentLoopError(code, message, context)
     raise AgentLoopContractError(
         f"{error.code}: {error.message}: " + json.dumps(error.context, sort_keys=True, separators=(",", ":"))
@@ -274,6 +313,153 @@ def classify_stop_reason(failure: str) -> StopReason | None:
     if failure in HUMAN_ESCALATION_FAILURES:
         return "human-escalation"
     return None
+
+
+def authenticate_loop_controls(
+    root: Path,
+    request: ControlAcquisitionRequest,
+) -> AuthenticatedLoopControls:
+    if request.control_source_kind != "protected-caller":
+        _reject(
+            "LOOP-401",
+            "agent loop trust controls must come from a protected caller",
+            source_kind=request.control_source_kind,
+        )
+    before = require_clean_candidate(root, request.candidate_revision)
+    contract_errors = validate_contract(
+        request.contract,
+        root,
+        request.contract_context,  # type: ignore[arg-type]
+        schema_bytes=request.contract_schema,
+    )
+    if contract_errors:
+        _reject("LOOP-402", "Acceptance Contract is invalid", errors=len(contract_errors))
+    authority_errors = validate_manifest(
+        request.authority_manifest,
+        root,
+        schema_bytes=request.authority_schema,
+    )
+    role = next(
+        (item for item in request.authority_manifest.get("roles", ()) if item.get("id") == request.assigned_role),
+        None,
+    )
+    if authority_errors or role is None:
+        _reject("LOOP-403", "provider-neutral role authority is invalid", errors=len(authority_errors))
+    trusted_context, protected_errors = evaluate_and_compose_trusted_context(
+        root,
+        request.trusted_base_revision,
+        request.candidate_revision,
+        request.trusted_policy,  # type: ignore[arg-type]
+        str(request.contract.get("contract_digest", "")),
+        request.bounded_context,
+        request.authorization,  # type: ignore[arg-type]
+    )
+    if trusted_context is None or protected_errors:
+        _reject("LOOP-404", "trusted protected-assets evaluation rejected controls", errors=len(protected_errors))
+    context = trusted_context.evidence_context()
+    after = require_clean_candidate(root, request.candidate_revision)
+    expected_identity = {
+        "candidate_revision": request.candidate_revision,
+        "candidate_tree": before["candidate_tree"],
+        "trusted_base_revision": request.trusted_base_revision,
+    }
+    if before != after or any(context.get(field) != value for field, value in expected_identity.items()):
+        _reject("LOOP-404", "authenticated Git identity changed during control acquisition")
+    contract = request.contract
+    if (
+        contract.get("source_revision") != request.candidate_revision
+        or contract.get("trusted_base_revision") != request.trusted_base_revision
+        or context.get("contract_digest") != contract.get("contract_digest")
+    ):
+        _reject("LOOP-404", "authenticated controls bind conflicting identities")
+    suites = contract.get("required_suites")
+    if not isinstance(suites, list) or len(suites) != 1 or not isinstance(suites[0], dict):
+        _reject("LOOP-402", "agent loop requires one bounded validation suite")
+    suite = suites[0]
+    validations = suite.get("validations")
+    if not isinstance(validations, list) or not validations:
+        _reject("LOOP-402", "Acceptance Contract validation inventory is empty")
+    validation_ids = tuple(sorted(str(item.get("validation_id", "")) for item in validations if isinstance(item, dict)))
+    if not validation_ids or any(not value for value in validation_ids):
+        _reject("LOOP-402", "Acceptance Contract validation inventory is malformed")
+    return AuthenticatedLoopControls(
+        contract_digest=str(contract["contract_digest"]),
+        source_revision=request.candidate_revision,
+        source_tree=str(context["candidate_tree"]),
+        trusted_base_revision=request.trusted_base_revision,
+        trusted_base_tree=str(context["trusted_base_tree"]),
+        assigned_role=request.assigned_role,
+        allowed_paths=tuple(str(value) for value in contract["allowed_paths"]),
+        protected_paths=tuple(str(value) for value in contract["protected_paths"]),
+        retry_budget=int(contract["retry_budget"]),
+        suite_id=str(suite["suite_id"]),
+        config_digest=str(contract["config_digest"]),
+        protocol_digest=str(contract["protocol_digest"]),
+        expected_validation_ids=validation_ids,
+        evidence_schema=request.evidence_schema,
+    )
+
+
+def admit_completed_evidence(
+    root: Path,
+    state: LoopState,
+    controls: AuthenticatedLoopControls,
+    evidence_path: Path,
+) -> EvidenceBinding:
+    before = require_clean_candidate(root, controls.source_revision)
+    verification = verify_evidence(evidence_path, controls.evidence_schema)
+    if verification.errors or verification.manifest is None:
+        _reject("LOOP-405", "only independently verified complete evidence is admissible")
+    manifest = verification.manifest
+    after = require_clean_candidate(root, controls.source_revision)
+    expected: dict[str, object] = {
+        "lifecycle": "complete",
+        "source_revision": controls.source_revision,
+        "source_tree": controls.source_tree,
+        "candidate_revision": controls.source_revision,
+        "candidate_tree": controls.source_tree,
+        "trusted_base_revision": controls.trusted_base_revision,
+        "trusted_base_tree": controls.trusted_base_tree,
+        "contract_digest": controls.contract_digest,
+        "suite_id": controls.suite_id,
+        "config_digest": controls.config_digest,
+        "protocol_digest": controls.protocol_digest,
+        "declared_validation_ids": list(controls.expected_validation_ids),
+    }
+    mismatches = sorted(field for field, value in expected.items() if manifest.get(field) != value)
+    if (
+        before != after
+        or before.get("candidate_tree") != controls.source_tree
+        or state.header.contract_digest != controls.contract_digest
+        or state.header.source_revision != controls.source_revision
+        or state.header.source_tree != controls.source_tree
+        or state.header.trusted_base_revision != controls.trusted_base_revision
+        or state.header.trusted_base_tree != controls.trusted_base_tree
+    ):
+        mismatches.append("loop-state")
+    identity = (manifest.get("run_id"), manifest.get("evidence_digest"))
+    existing = {
+        (binding.run_id, binding.evidence_digest) for event in state.events for binding in event.evidence_bindings
+    }
+    if identity in existing:
+        mismatches.append("duplicate-evidence")
+    if mismatches:
+        _reject("LOOP-406", "evidence identity does not match authenticated loop controls", fields=mismatches)
+    run_id = str(manifest["run_id"])
+    evidence_digest = str(manifest["evidence_digest"])
+    if not _LOOP_ID.fullmatch(run_id) or not re.fullmatch(r"sha256:[0-9a-f]{64}", evidence_digest):
+        _reject("LOOP-406", "evidence root identity is malformed")
+    return EvidenceBinding(
+        run_id=run_id,
+        evidence_digest=evidence_digest,
+        source_revision=controls.source_revision,
+        source_tree=controls.source_tree,
+        contract_digest=controls.contract_digest,
+        lifecycle="complete",
+        independently_verified=True,
+        verdict=str(manifest["verdict"]),
+        validation_ids=controls.expected_validation_ids,
+    )
 
 
 def _decision_error(code: str, message: str, reason: StopReason, **context: object) -> RetryDecision:

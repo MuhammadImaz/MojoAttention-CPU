@@ -37,7 +37,7 @@ from mojoattention.validation.fast import (
 )
 from mojoattention.validation.fast_canaries import execute_false_green_canary
 from mojoattention.validation.host import probe
-from mojoattention.validation.identity import detect_identity, evaluate_identity
+from mojoattention.validation.identity import detect_identity, evaluate_identity, require_clean_candidate
 from mojoattention.validation.paths import contains
 from mojoattention.validation.preflight import evaluate, render_json
 from mojoattention.validation.privacy import find_forbidden_tracked_paths, tracked_paths
@@ -580,31 +580,7 @@ def run_fast_validation(
 
 
 def _require_candidate_checkout(root: Path, revision: str) -> None:
-    environment = {
-        "PATH": os.environ.get("PATH", ""),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_NO_REPLACE_OBJECTS": "1",
-        "LC_ALL": "C",
-    }
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        capture_output=True,
-        check=False,
-        text=True,
-        env=environment,
-    )
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=no"],
-        cwd=root,
-        capture_output=True,
-        check=False,
-        text=True,
-        env=environment,
-    )
-    if head.returncode != 0 or head.stdout.strip() != revision or dirty.returncode != 0 or dirty.stdout:
-        raise ValueError("candidate checkout identity or tracked cleanliness is invalid")
+    require_clean_candidate(root, revision)
 
 
 def build_parser() -> argparse.ArgumentParser:
