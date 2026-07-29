@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from jsonschema import Draft202012Validator, FormatChecker  # type: ignore[import-untyped]
+
+from mojoattention.validation.authority import authorize_write
+from mojoattention.validation.paths import contains
 
 SchemaSource = Path | bytes
 LoopStatus = Literal[
@@ -158,6 +162,42 @@ class LoopState:
     errors: tuple[AgentLoopError, ...] = ()
 
 
+@dataclass(frozen=True)
+class ValidationObservation:
+    validation_id: str
+    case_id: str
+    config_digest: str
+    status: str
+    metric_name: str | None
+    direction: str | None
+    value: int | None
+
+
+@dataclass(frozen=True)
+class RepairRequest:
+    diagnosis: Diagnosis
+    improvement: Improvement
+    repair_paths: tuple[str, ...]
+    previous_observations: tuple[ValidationObservation, ...]
+    current_observations: tuple[ValidationObservation, ...]
+    operation: str
+    actor_kind: str
+    requests_approval: bool
+    infrastructure_identity_before: str | None
+    infrastructure_identity_after: str | None
+    semantic_state_before: str | None
+    semantic_state_after: str | None
+    previous_failure_signatures: tuple[str, ...] = ()
+    failure_kind: str | None = None
+
+
+@dataclass(frozen=True)
+class RetryDecision:
+    allowed: bool
+    stop_reason: StopReason | None
+    errors: tuple[AgentLoopError, ...]
+
+
 class AgentLoopContractError(ValueError):
     pass
 
@@ -228,6 +268,144 @@ def classify_stop_reason(failure: str) -> StopReason | None:
     if failure in HUMAN_ESCALATION_FAILURES:
         return "human-escalation"
     return None
+
+
+def _decision_error(code: str, message: str, reason: StopReason, **context: object) -> RetryDecision:
+    return RetryDecision(False, reason, (AgentLoopError(code, message, context),))
+
+
+def _observation_map(
+    observations: tuple[ValidationObservation, ...],
+) -> dict[tuple[str, str, str], ValidationObservation] | None:
+    mapped: dict[tuple[str, str, str], ValidationObservation] = {}
+    for observation in observations:
+        key = (observation.validation_id, observation.case_id, observation.config_digest)
+        if key in mapped:
+            return None
+        mapped[key] = observation
+    return mapped
+
+
+def _objective_improvement(request: RepairRequest) -> bool:
+    previous = _observation_map(request.previous_observations)
+    current = _observation_map(request.current_observations)
+    if previous is None or current is None:
+        return False
+    if any(
+        current.get(identity) is None or (before.status != "fail" and current[identity].status == "fail")
+        for identity, before in previous.items()
+    ):
+        return False
+    if any(observation.status == "fail" and identity not in previous for identity, observation in current.items()):
+        return False
+    proof = request.improvement
+    identity = (proof.validation_id, proof.case_id, proof.config_digest)
+    before = previous.get(identity)
+    after = current.get(identity)
+    if before is None or after is None:
+        return False
+    if before.status == "fail" and after.status == "pass":
+        return True
+    if (
+        before.metric_name != proof.metric_name
+        or after.metric_name != proof.metric_name
+        or before.direction != proof.direction
+        or after.direction != proof.direction
+        or before.value != proof.before
+        or after.value != proof.after
+        or proof.direction not in {"increase", "decrease"}
+    ):
+        return False
+    return proof.after > proof.before if proof.direction == "increase" else proof.after < proof.before
+
+
+def evaluate_retry(
+    state: LoopState,
+    request: RepairRequest,
+    authority_manifest: dict[str, Any],
+    root: Path,
+) -> RetryDecision:
+    if state.terminal:
+        return _decision_error("LOOP-201", "terminal loop cannot authorize repair", "human-escalation")
+    if state.status != "validation-failed" or state.last_validation is None:
+        return _decision_error("LOOP-202", "retry requires a failed validation state", "human-escalation")
+    if state.retries_consumed >= state.header.retry_budget or state.attempt >= 5:
+        return _decision_error("LOOP-203", "retry budget is exhausted", "retry-budget-exhausted")
+    diagnosis = request.diagnosis
+    prior = state.events[-1]
+    prior_evidence = prior.evidence_bindings
+    if (
+        prior.transition != "validation-recorded"
+        or prior.validation_id != diagnosis.validation_id
+        or len(prior_evidence) != 1
+        or prior_evidence[0].evidence_digest != diagnosis.evidence_digest
+        or diagnosis.verdict != prior_evidence[0].verdict
+        or not re.fullmatch(r"(?:LOOP|FAST)-[0-9]{3}", diagnosis.error_code)
+        or not re.fullmatch(r"sha256:[0-9a-f]{64}", diagnosis.failure_signature)
+        or not diagnosis.affected_paths
+        or not diagnosis.reproduction_argv
+        or len(diagnosis.reproduction_argv) > 64
+    ):
+        return _decision_error("LOOP-204", "diagnosis does not bind the failed validation", "human-escalation")
+    if diagnosis.failure_signature in request.previous_failure_signatures:
+        return _decision_error("LOOP-205", "failure signature was already attempted", "non-improving-retry")
+    mandatory_stop = classify_stop_reason(request.failure_kind) if request.failure_kind is not None else None
+    if mandatory_stop is not None:
+        return _decision_error("LOOP-206", "failure kind forbids automated retry", mandatory_stop)
+    if diagnosis.verdict == "contract-invalid":
+        return _decision_error("LOOP-207", "contract invalidity requires a newly approved loop", "human-escalation")
+    if request.requests_approval or request.actor_kind != "agent":
+        return _decision_error("LOOP-208", "automated repair cannot approve protected work", "protected-conflict")
+    if tuple(diagnosis.affected_paths) != request.repair_paths:
+        return _decision_error("LOOP-209", "repair paths differ from diagnosed paths", "scope-expansion")
+    role = next(
+        (item for item in authority_manifest["roles"] if item["id"] == state.header.assigned_role),
+        None,
+    )
+    for path in request.repair_paths:
+        if role is not None and any(contains(scope, path) for scope in role["indirect_output_paths"]):
+            return _decision_error(
+                "LOOP-210",
+                "indirect outputs cannot be implementation repair targets",
+                "scope-expansion",
+                path=path,
+            )
+        authority_error = authorize_write(
+            authority_manifest,
+            state.header.assigned_role,
+            request.operation,
+            path,
+            state.header.allowed_paths,
+            root=root,
+        )
+        if authority_error is not None:
+            reason: StopReason = (
+                "protected-conflict"
+                if authority_error.code in {"AUTH-004", "AUTH-006", "AUTH-009"} or path in state.header.protected_paths
+                else "scope-expansion"
+            )
+            return _decision_error(
+                "LOOP-210",
+                "repair is outside effective contract and role authority",
+                reason,
+                authority_code=authority_error.code,
+                path=path,
+            )
+    if diagnosis.verdict == "infrastructure-invalid" and (
+        request.infrastructure_identity_before is None
+        or request.infrastructure_identity_after is None
+        or request.infrastructure_identity_before == request.infrastructure_identity_after
+        or request.semantic_state_before is None
+        or request.semantic_state_before != request.semantic_state_after
+    ):
+        return _decision_error(
+            "LOOP-211",
+            "infrastructure repair lacks changed infrastructure and stable semantic identity",
+            "human-escalation",
+        )
+    if not _objective_improvement(request):
+        return _decision_error("LOOP-212", "repair has no comparable objective improvement", "non-improving-retry")
+    return RetryDecision(True, None, ())
 
 
 def _header(record: dict[str, Any]) -> LoopHeader:
