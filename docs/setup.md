@@ -105,10 +105,20 @@ Fast has one public execution surface:
 scripts/run.sh mojoattention validate \
   --suite fast \
   --contract /path/outside/checkout/issued-fast-contract.json \
+  --trusted-base /path/outside/checkout/trusted-base-anchor.json \
+  --trusted-policy /path/outside/checkout/protected-assets.json \
+  --trusted-policy-schema /path/outside/checkout/protected-assets.schema.json \
+  --authorization /path/outside/checkout/authorization.json \
+  --trusted-authorization-schema /path/outside/checkout/protected-change-authorization.schema.json \
+  --approval-anchor-revision <40-hex-independent-anchor> \
   --output reports/runs
 ```
 
-The contract must be an externally issued Acceptance Contract v2 bound to the
+All six trust inputs and the contract must be acquired outside the candidate
+checkout. The trusted-base anchor binds the exact base revision/tree and
+trusted-policy Git identity/digests; the human authorization binds that base,
+the candidate revision/tree, contract digest, change-set digest, protected
+paths, and independent approval anchor. The contract must be an externally issued Acceptance Contract v2 bound to the
 current candidate commit, its trusted base, and the exact
 `suite_manifest_digest`, `config_digest`, `protocol_digest`, ordered
 `FAST-001`–`FAST-013` inventory, counts, cases, seed, and complete shard in the
@@ -146,6 +156,12 @@ scripts/run.sh pytest -q \
 scripts/run.sh mojoattention validate \
   --suite fast \
   --contract /path/outside/checkout/issued-fast-contract.json \
+  --trusted-base /path/outside/checkout/trusted-base-anchor.json \
+  --trusted-policy /path/outside/checkout/protected-assets.json \
+  --trusted-policy-schema /path/outside/checkout/protected-assets.schema.json \
+  --authorization /path/outside/checkout/authorization.json \
+  --trusted-authorization-schema /path/outside/checkout/protected-change-authorization.schema.json \
+  --approval-anchor-revision <40-hex-independent-anchor> \
   --output reports/runs
 scripts/run.sh mojoattention evidence inspect \
   --run reports/runs/<generated-id>.complete \

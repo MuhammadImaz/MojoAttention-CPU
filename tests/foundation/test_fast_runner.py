@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
@@ -94,7 +95,7 @@ class FastRunnerTests(unittest.TestCase):
 
     def test_completed_check_failure_maps_to_product_verdict(self) -> None:
         failed = list(self.observations())
-        failed[2] = replace(failed[2], status="fail")
+        failed[2] = replace(failed[2], status="fail", failure_class="product-fail")
         verdict, errors = evaluate_observations(self.manifest(), tuple(failed))
         self.assertEqual("product-fail", verdict)
         self.assertTrue(errors)
@@ -109,31 +110,75 @@ class FastRunnerTests(unittest.TestCase):
         verdict, _ = evaluate_observations(self.manifest(), tuple(canonical))
         self.assertEqual("contract-invalid", verdict)
 
+    def test_contradictory_observation_status_and_failure_class_fail_closed(self) -> None:
+        canonical = self.observations()
+        contradictions = (
+            (replace(canonical[0], status="pass", failure_class="product-fail"), *canonical[1:]),
+            (replace(canonical[0], status="fail", failure_class="pass"), *canonical[1:]),
+        )
+        for observations in contradictions:
+            with self.subTest(observation=observations[0]):
+                verdict, errors = evaluate_observations(self.manifest(), observations)
+                self.assertEqual("contract-invalid", verdict)
+                self.assertIn("FAST-INV-005", {error.code for error in errors})
+
     def test_bounded_subprocess_uses_explicit_cwd_minimal_environment_and_no_shell(self) -> None:
         manifest = self.manifest()
-        completed = subprocess.CompletedProcess(["tool"], 0, stdout=b"ok", stderr=b"")
         ambient = {"PATH": "/tools", "SECRET": "must-not-leak", "LC_ALL": "ambient"}
-        with patch.dict(os.environ, ambient, clear=True), patch("subprocess.run", return_value=completed) as run:
+
+        class Process:
+            stdout = io.BytesIO(b"ok")
+            stderr = io.BytesIO()
+            returncode = 0
+
+            def wait(self, timeout=None):
+                self.returncode = 0
+                return 0
+
+            def kill(self):
+                self.returncode = -9
+
+        with patch.dict(os.environ, ambient, clear=True), patch("subprocess.Popen", return_value=Process()) as popen:
             result = run_bounded_argv(("tool", "--machine"), ROOT, manifest.runner_config)
         self.assertEqual(0, result.returncode)
-        kwargs = run.call_args.kwargs
+        kwargs = popen.call_args.kwargs
         self.assertEqual(ROOT, kwargs["cwd"])
         self.assertEqual({"PATH": "/tools", "LC_ALL": "C"}, kwargs["env"])
         self.assertFalse(kwargs["shell"])
-        self.assertEqual(manifest.runner_config.timeout_seconds, kwargs["timeout"])
-        self.assertTrue(kwargs["capture_output"])
+        self.assertEqual(subprocess.PIPE, kwargs["stdout"])
+        self.assertEqual(subprocess.PIPE, kwargs["stderr"])
 
     def test_bounded_subprocess_maps_timeout_and_missing_tool_without_log_parsing(self) -> None:
         manifest = self.manifest()
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(["tool"], 1)):
+
+        class TimedOutProcess:
+            stdout = io.BytesIO()
+            stderr = io.BytesIO()
+
+            def __init__(self):
+                self.waits = 0
+                self.killed = False
+
+            def wait(self, timeout=None):
+                self.waits += 1
+                if self.waits == 1:
+                    raise subprocess.TimeoutExpired(["tool"], timeout)
+                return -9
+
+            def kill(self):
+                self.killed = True
+
+        process = TimedOutProcess()
+        with patch("subprocess.Popen", return_value=process):
             timed_out = run_bounded_argv(("tool",), ROOT, manifest.runner_config)
         self.assertEqual("infrastructure-invalid", timed_out.failure_class)
         self.assertEqual("FAST-EXEC-002", timed_out.error.code)
-        with patch("subprocess.run", side_effect=FileNotFoundError):
+        self.assertTrue(process.killed)
+        with patch("subprocess.Popen", side_effect=FileNotFoundError):
             missing = run_bounded_argv(("tool",), ROOT, manifest.runner_config)
         self.assertEqual("infrastructure-invalid", missing.failure_class)
         self.assertEqual("FAST-EXEC-001", missing.error.code)
-        with patch("subprocess.run", side_effect=OSError("private diagnostic")):
+        with patch("subprocess.Popen", side_effect=OSError("private diagnostic")):
             unavailable = run_bounded_argv(("tool",), ROOT, manifest.runner_config)
         self.assertEqual("infrastructure-invalid", unavailable.failure_class)
         self.assertEqual("FAST-EXEC-003", unavailable.error.code)
@@ -142,20 +187,55 @@ class FastRunnerTests(unittest.TestCase):
     def test_bounded_subprocess_nonzero_is_typed_without_parsing_human_output(self) -> None:
         manifest = self.manifest()
         for output in (b"looks successful", b"fatal failure", b""):
-            completed = subprocess.CompletedProcess(["tool"], 7, stdout=output, stderr=output)
-            with self.subTest(output=output), patch("subprocess.run", return_value=completed):
+            process = type(
+                "Process",
+                (),
+                {
+                    "stdout": io.BytesIO(output),
+                    "stderr": io.BytesIO(output),
+                    "returncode": 7,
+                    "wait": lambda self, timeout=None: 7,
+                    "kill": lambda self: None,
+                },
+            )()
+            with self.subTest(output=output), patch("subprocess.Popen", return_value=process):
                 result = run_bounded_argv(("tool", "--machine"), ROOT, manifest.runner_config)
             self.assertEqual("product-fail", result.failure_class)
             self.assertEqual("FAST-EXEC-004", result.error.code)
 
     def test_bounded_subprocess_caps_output_and_rejects_recursive_or_unbounded_commands(self) -> None:
         config = replace(self.manifest().runner_config, max_output_bytes=4)
-        completed = subprocess.CompletedProcess(["tool"], 0, stdout=b"123456", stderr=b"abcdef")
-        with patch("subprocess.run", return_value=completed):
+
+        class ChunkedStream:
+            def __init__(self, value):
+                self._stream = io.BytesIO(value)
+                self.read_sizes = []
+
+            def read(self, size=-1):
+                self.read_sizes.append(size)
+                if size < 0:
+                    raise AssertionError("child output must be drained in bounded chunks")
+                return self._stream.read(size)
+
+        stdout = ChunkedStream(b"123456")
+        stderr = ChunkedStream(b"abcdef")
+        process = type(
+            "Process",
+            (),
+            {
+                "stdout": stdout,
+                "stderr": stderr,
+                "returncode": 0,
+                "wait": lambda self, timeout=None: 0,
+                "kill": lambda self: None,
+            },
+        )()
+        with patch("subprocess.Popen", return_value=process):
             result = run_bounded_argv(("tool",), ROOT, config)
         self.assertEqual(b"1234", result.stdout)
         self.assertEqual(b"abcd", result.stderr)
         self.assertTrue(result.output_truncated)
+        self.assertTrue(all(size > 0 for size in (*stdout.read_sizes, *stderr.read_sizes)))
         for argv in (
             ("scripts/quality.sh",),
             ("pytest", "tests"),

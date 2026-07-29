@@ -8,7 +8,13 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from mojoattention.cli.main import _fast_contract_inventory, _foundation_adapters, build_parser, main
+from mojoattention.cli.main import (
+    _attribute_protected_errors,
+    _fast_contract_inventory,
+    _foundation_adapters,
+    build_parser,
+    main,
+)
 from mojoattention.validation.fast import (
     FastError,
     FastRunResult,
@@ -17,6 +23,22 @@ from mojoattention.validation.fast import (
     evidence_validations,
     verify_fast_evidence,
 )
+from mojoattention.validation.protected_assets import ProtectedError
+
+TRUST_ARGS = [
+    "--trusted-base",
+    "/tmp/trusted-base.json",
+    "--trusted-policy",
+    "/tmp/protected-assets.json",
+    "--trusted-policy-schema",
+    "/tmp/protected-assets.schema.json",
+    "--authorization",
+    "/tmp/authorization.json",
+    "--trusted-authorization-schema",
+    "/tmp/protected-change-authorization.schema.json",
+    "--approval-anchor-revision",
+    "a" * 40,
+]
 
 
 class FastCliTests(unittest.TestCase):
@@ -26,6 +48,7 @@ class FastCliTests(unittest.TestCase):
                 "validate",
                 "--suite",
                 "fast",
+                *TRUST_ARGS,
                 "--contract",
                 "/tmp/issued-contract.json",
                 "--output",
@@ -45,6 +68,7 @@ class FastCliTests(unittest.TestCase):
                         "validate",
                         "--suite",
                         "fast",
+                        *TRUST_ARGS,
                         "--contract",
                         "/tmp/issued-contract.json",
                         "--output",
@@ -69,6 +93,7 @@ class FastCliTests(unittest.TestCase):
                         "validate",
                         "--suite",
                         "fast",
+                        *TRUST_ARGS,
                         "--contract",
                         "/tmp/issued-contract.json",
                         "--output",
@@ -91,6 +116,7 @@ class FastCliTests(unittest.TestCase):
                     "validate",
                     "--suite",
                     "fast",
+                    *TRUST_ARGS,
                     "--contract",
                     "/tmp/issued-contract.json",
                     "--output",
@@ -143,6 +169,7 @@ class FastCliTests(unittest.TestCase):
                         "validate",
                         "--suite",
                         "fast",
+                        *TRUST_ARGS,
                         "--contract",
                         "/tmp/issued-contract.json",
                         "--output",
@@ -221,7 +248,10 @@ class FastContractIntersectionTests(unittest.TestCase):
                 "mojoattention.cli.main.run_bounded_argv",
                 return_value=ProcessResult(0, b"", b"", False),
             ) as bounded,
-            patch("mojoattention.cli.main.tracked_paths", return_value=b"src/mojoattention/__init__.py\0"),
+            patch(
+                "mojoattention.cli.main.subprocess.check_output",
+                return_value=b"src/mojoattention/__init__.py\0",
+            ),
         ):
             self.assertEqual("pass", adapters["FAST-003"](checks["FAST-003"]).observation.status)
             self.assertEqual("pass", adapters["FAST-004"](checks["FAST-004"]).observation.status)
@@ -244,12 +274,39 @@ class FastContractIntersectionTests(unittest.TestCase):
             static = adapters["FAST-003"](checks["FAST-003"])
         self.assertEqual("product-fail", static.observation.failure_class)
         with patch(
-            "mojoattention.cli.main.tracked_paths",
+            "mojoattention.cli.main.subprocess.check_output",
             return_value=b".agents/private-state.json\0.codex/session.json\0",
         ):
             path = adapters["FAST-006"](checks["FAST-006"])
         self.assertEqual("contract-invalid", path.observation.failure_class)
         self.assertEqual({"count": 2}, path.errors[0].context)
+
+    def test_protected_findings_are_attributed_only_to_fast_013(self) -> None:
+        observations = tuple(
+            Observation(
+                item.validation_id,
+                item.case_id,
+                item.seed,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                "pass",
+            )
+            for item in self.manifest.checks
+        )
+        result = _attribute_protected_errors(
+            FastRunResult("pass", observations, (), 1),
+            (ProtectedError("PROT-003", "unauthorized", {"path": "protected"}),),
+        )
+        failed = [item for item in result.observations if item.status == "fail"]
+        self.assertEqual(["FAST-013"], [item.validation_id for item in failed])
+        self.assertEqual("FAST-013", result.errors[0].context["validation_id"])
 
 
 class FastEvidenceTranslationTests(unittest.TestCase):

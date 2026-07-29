@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -87,7 +88,7 @@ class Observation:
     shard_index: int
     shard_total: int
     status: Literal["pass", "fail"]
-    failure_class: Verdict = "product-fail"
+    failure_class: Verdict = "pass"
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,7 +108,7 @@ class AdapterResult:
 
     @classmethod
     def passed(cls, check: FastCheck) -> AdapterResult:
-        return cls(_completed_observation(check, "pass", "product-fail"))
+        return cls(_completed_observation(check, "pass", "pass"))
 
     @classmethod
     def failed(cls, check: FastCheck, failure_class: Verdict, error: FastError) -> AdapterResult:
@@ -133,6 +134,7 @@ def evidence_validations(
     reproduction_argv: Mapping[str, tuple[str, ...]],
     *,
     reference_target_ns: int | None = None,
+    attachment_paths: Mapping[str, tuple[str, ...]] | None = None,
 ) -> list[dict[str, Any]]:
     """Translate structured runner observations into the shared evidence interface."""
 
@@ -205,7 +207,7 @@ def evidence_validations(
                 ]
                 if observation.status == "fail"
                 else [],
-                "attachments": [],
+                "attachments": list((attachment_paths or {}).get(observation.validation_id, ())),
             }
         )
     return validations
@@ -215,6 +217,8 @@ def verify_fast_evidence(
     manifest: FastManifest,
     result: FastRunResult,
     evidence: Mapping[str, Any],
+    *,
+    attachment_paths: Mapping[str, tuple[str, ...]] | None = None,
 ) -> tuple[FastError, ...]:
     """Bind an independently verified evidence root back to the authenticated run."""
 
@@ -223,6 +227,7 @@ def verify_fast_evidence(
         result,
         {check.validation_id: check.reproduction_argv for check in manifest.checks},
         reference_target_ns=manifest.reference_target_ns,
+        attachment_paths=attachment_paths,
     )
     expected.sort(key=lambda item: item["validation_id"])
     exact = (
@@ -334,15 +339,14 @@ def run_bounded_argv(argv: tuple[str, ...], cwd: Path, config: RunnerConfig) -> 
     environment = {name: os.environ[name] for name in config.environment if name in os.environ}
     environment["LC_ALL"] = config.locale
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             argv,
             cwd=cwd,
             env=environment,
             shell=False,
             stdin=subprocess.DEVNULL,
-            capture_output=True,
-            timeout=config.timeout_seconds,
-            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
         )
     except FileNotFoundError:
         error = _error("FAST-EXEC-001", "required executable is unavailable", executable=argv[0])
@@ -353,25 +357,61 @@ def run_bounded_argv(argv: tuple[str, ...], cwd: Path, config: RunnerConfig) -> 
     except OSError:
         error = _error("FAST-EXEC-003", "bounded subprocess could not execute")
         return ProcessResult(None, b"", b"", False, "infrastructure-invalid", error)
-    stdout = completed.stdout or b""
-    stderr = completed.stderr or b""
+
     limit = config.max_output_bytes
-    truncated = len(stdout) > limit or len(stderr) > limit
-    if completed.returncode != 0:
+    outputs = [bytearray(), bytearray()]
+    truncated = [False, False]
+    read_failed = threading.Event()
+
+    def drain(index: int) -> None:
+        stream = process.stdout if index == 0 else process.stderr
+        if stream is None:
+            return
+        try:
+            while chunk := stream.read(8192):
+                remaining = limit - len(outputs[index])
+                if remaining > 0:
+                    outputs[index].extend(chunk[:remaining])
+                if len(chunk) > remaining:
+                    truncated[index] = True
+        except OSError:
+            read_failed.set()
+
+    readers = tuple(threading.Thread(target=drain, args=(index,), daemon=True) for index in range(2))
+    for reader in readers:
+        reader.start()
+    try:
+        returncode = process.wait(timeout=config.timeout_seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+        for reader in readers:
+            reader.join()
+        error = _error("FAST-EXEC-002", "bounded subprocess timed out", timeout_seconds=config.timeout_seconds)
+        return ProcessResult(None, b"", b"", any(truncated), "infrastructure-invalid", error)
+    for reader in readers:
+        reader.join()
+    if read_failed.is_set():
+        error = _error("FAST-EXEC-003", "bounded subprocess could not execute")
+        return ProcessResult(None, b"", b"", any(truncated), "infrastructure-invalid", error)
+
+    stdout, stderr = bytes(outputs[0]), bytes(outputs[1])
+    output_truncated = any(truncated)
+    if returncode != 0:
         error = _error(
             "FAST-EXEC-004",
             "bounded subprocess returned a nonzero exit",
-            returncode=completed.returncode,
+            returncode=returncode,
         )
         return ProcessResult(
-            completed.returncode,
-            stdout[:limit],
-            stderr[:limit],
-            truncated,
+            returncode,
+            stdout,
+            stderr,
+            output_truncated,
             "product-fail",
             error,
         )
-    return ProcessResult(completed.returncode, stdout[:limit], stderr[:limit], truncated)
+    return ProcessResult(returncode, stdout, stderr, output_truncated)
 
 
 def execute_checks(
@@ -458,6 +498,14 @@ def evaluate_observations(
         )
         if completion != (1, 1, 0, 0, 0, 0):
             errors.append(_error("FAST-INV-004", "validation did not complete exactly once", index=index))
+        if (observed.status == "pass") != (observed.failure_class == "pass"):
+            errors.append(
+                _error(
+                    "FAST-INV-005",
+                    "validation status and failure class are contradictory",
+                    index=index,
+                )
+            )
     if errors:
         return "contract-invalid", tuple(errors)
     failures = [item for item in observations if item.status == "fail"]
