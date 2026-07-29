@@ -209,6 +209,43 @@ class FastContractIntersectionTests(unittest.TestCase):
 
     def test_exact_contract_manifest_intersection_passes(self) -> None:
         _fast_contract_inventory(self.contract, self.manifest)
+        self.assertEqual(self.manifest.manifest_digest, self.contract["suite_manifest_digest"])
+        self.assertEqual(self.manifest.config_digest, self.contract["config_digest"])
+        suite = self.contract["required_suites"][0]
+        self.assertEqual(14, suite["required_total"])
+        self.assertEqual("FAST-014", suite["validations"][-1]["validation_id"])
+
+    def test_tracked_story_1_7_v2_contract_drives_exact_evidence_inventory(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        contract = json.loads((root / "contracts/acceptance/1-7-agent-loop.example.json").read_bytes())
+        _fast_contract_inventory(contract, self.manifest)
+        observations = tuple(
+            Observation(
+                check.validation_id,
+                check.case_id,
+                check.seed,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                "pass",
+            )
+            for check in self.manifest.checks
+        )
+        validations = evidence_validations(
+            FastRunResult("pass", observations, (), 1),
+            {check.validation_id: check.reproduction_argv for check in self.manifest.checks},
+            reference_target_ns=self.manifest.reference_target_ns,
+        )
+        self.assertEqual(
+            [item["validation_id"] for item in contract["required_suites"][0]["validations"]],
+            [item["validation_id"] for item in validations],
+        )
 
     def test_any_contract_manifest_drift_is_rejected(self) -> None:
         mutations = []

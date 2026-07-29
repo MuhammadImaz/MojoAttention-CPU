@@ -20,6 +20,7 @@ REQUIRED_ROLES = frozenset(
         "performance-analyst",
         "documentation-agent",
         "evidence-producer",
+        "agent-loop-producer",
     }
 )
 READ_ONLY_ROLES = frozenset({"explorer", "acceptance-auditor", "validation-triage"})

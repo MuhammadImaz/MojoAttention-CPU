@@ -121,11 +121,16 @@ the candidate revision/tree, contract digest, change-set digest, protected
 paths, and independent approval anchor. The contract must be an externally issued Acceptance Contract v2 bound to the
 current candidate commit, its trusted base, and the exact
 `suite_manifest_digest`, `config_digest`, `protocol_digest`, ordered
-`FAST-001`–`FAST-013` inventory, counts, cases, seed, and complete shard in the
+`FAST-001`–`FAST-014` inventory, counts, cases, seed, and complete shard in the
 trusted `contracts/validation-suites/fast.json`. The contract path must be
 outside the candidate checkout. `reports/runs` is the only accepted output
 argument. The producer chooses a unique child identity; callers cannot select,
 resume, or name a run.
+
+The tracked `contracts/acceptance/1-7-agent-loop.example.json` demonstrates the
+exact v2 inventory/digest shape used by `FAST-014`; copy and externally issue it
+for the real candidate identity. It is not an approval envelope or a valid
+substitute for the outside-checkout contract and human authorization inputs.
 
 Canonical JSON is written to stdout and diagnostics to stderr. Exits are `0`
 pass, `1` product failure, `2` infrastructure invalid, `3` contract invalid,
