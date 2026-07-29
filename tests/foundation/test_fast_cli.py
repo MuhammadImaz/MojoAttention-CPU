@@ -256,8 +256,39 @@ class FastContractIntersectionTests(unittest.TestCase):
             self.assertEqual("pass", adapters["FAST-003"](checks["FAST-003"]).observation.status)
             self.assertEqual("pass", adapters["FAST-004"](checks["FAST-004"]).observation.status)
             self.assertEqual("pass", adapters["FAST-006"](checks["FAST-006"]).observation.status)
-        self.assertEqual(("ruff", "check", "."), bounded.call_args_list[0].args[0])
+        self.assertEqual(
+            ("ruff", "check", "./src/mojoattention/__init__.py"),
+            bounded.call_args_list[0].args[0],
+        )
         self.assertEqual("-c", bounded.call_args_list[1].args[0][1])
+
+    def test_static_adapter_ignores_untracked_python_and_uses_only_head_tree_paths(self) -> None:
+        adapters = _foundation_adapters(Path("/repo"), self.manifest, authority_valid=True)
+        check = next(item for item in self.manifest.checks if item.validation_id == "FAST-003")
+        with (
+            patch(
+                "mojoattention.cli.main.subprocess.check_output",
+                return_value=b"src/mojoattention/good.py\0tests/foundation/test_good.py\0",
+            ),
+            patch(
+                "mojoattention.cli.main.run_bounded_argv",
+                return_value=ProcessResult(0, b"", b"", False),
+            ) as bounded,
+        ):
+            result = adapters["FAST-003"](check)
+        self.assertEqual("pass", result.observation.status)
+        argv = bounded.call_args.args[0]
+        self.assertEqual(
+            (
+                "ruff",
+                "check",
+                "./src/mojoattention/good.py",
+                "./tests/foundation/test_good.py",
+            ),
+            argv,
+        )
+        self.assertNotIn(".", argv)
+        self.assertNotIn("./untracked_bad.py", argv)
 
     def test_foundation_adapter_failures_are_typed_and_private_paths_are_not_reported(self) -> None:
         adapters = _foundation_adapters(Path("/repo"), self.manifest, authority_valid=True)
@@ -270,7 +301,13 @@ class FastContractIntersectionTests(unittest.TestCase):
             "product-fail",
             FastError("FAST-EXEC-004", "bounded subprocess returned a nonzero exit", {}),
         )
-        with patch("mojoattention.cli.main.run_bounded_argv", return_value=failed):
+        with (
+            patch("mojoattention.cli.main.run_bounded_argv", return_value=failed),
+            patch(
+                "mojoattention.cli.main.subprocess.check_output",
+                return_value=b"src/mojoattention/good.py\0",
+            ),
+        ):
             static = adapters["FAST-003"](checks["FAST-003"])
         self.assertEqual("product-fail", static.observation.failure_class)
         with patch(

@@ -8,7 +8,7 @@ import sys
 import tempfile
 from contextlib import suppress
 from dataclasses import asdict
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 from mojoattention.config import ProjectPolicy
@@ -232,23 +232,65 @@ def _foundation_adapters(
         if check.validation_id == "FAST-003":
 
             def static_adapter(item: FastCheck) -> AdapterResult:
-                process = run_bounded_argv(
-                    ("ruff", "check", "."),
-                    root,
-                    manifest.runner_config,
+                committed = subprocess.check_output(
+                    ["git", "ls-tree", "-r", "-z", "--name-only", "HEAD"],
+                    cwd=root,
+                    env={"PATH": os.environ.get("PATH", ""), "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1"},
                 )
+                python_paths = tuple(
+                    f"./{path}"
+                    for raw in committed.split(b"\0")
+                    if raw
+                    for path in (raw.decode("utf-8", errors="strict"),)
+                    if path.endswith(".py")
+                    and not path.startswith("/")
+                    and "\\" not in path
+                    and all(part not in {"", ".", ".."} for part in PurePosixPath(path).parts)
+                )
+                if not python_paths:
+                    return AdapterResult.failed(
+                        item,
+                        "contract-invalid",
+                        FastError("FAST-STATIC-001", "candidate commit contains no bounded Python inputs", {}),
+                    )
+                chunks: list[tuple[str, ...]] = []
+                current: list[str] = []
+                current_bytes = 0
+                for path in python_paths:
+                    encoded_size = len(path.encode("utf-8")) + 1
+                    if current and (len(current) >= 256 or current_bytes + encoded_size > 60_000):
+                        chunks.append(tuple(current))
+                        current = []
+                        current_bytes = 0
+                    current.append(path)
+                    current_bytes += encoded_size
+                chunks.append(tuple(current))
+                processes = [
+                    run_bounded_argv(
+                        ("ruff", "check", *chunk),
+                        root,
+                        manifest.runner_config,
+                    )
+                    for chunk in chunks
+                ]
                 if diagnostics is not None:
                     diagnostics[item.validation_id] = canonical_bytes(
                         {
-                            "returncode": process.returncode,
-                            "output_truncated": process.output_truncated,
-                            "stdout": process.stdout.decode("utf-8", errors="replace"),
-                            "stderr": process.stderr.decode("utf-8", errors="replace"),
+                            "chunks": [
+                                {
+                                    "returncode": process.returncode,
+                                    "output_truncated": process.output_truncated,
+                                    "stdout": process.stdout.decode("utf-8", errors="replace"),
+                                    "stderr": process.stderr.decode("utf-8", errors="replace"),
+                                }
+                                for process in processes
+                            ],
                         },
                         newline=True,
                     )
-                if process.error is not None:
-                    return AdapterResult.failed(item, process.failure_class or "product-fail", process.error)
+                if failed := next((process for process in processes if process.error is not None), None):
+                    assert failed.error is not None
+                    return AdapterResult.failed(item, failed.failure_class or "product-fail", failed.error)
                 return AdapterResult.passed(item)
 
             adapters[check.validation_id] = static_adapter
