@@ -8,6 +8,8 @@ Protected-path approval is a separate envelope. The contract stores only its `au
 
 `protected-assets.json` is the canonical protected inventory. A protected caller supplies policy/schema bytes, the policy's Git blob OID and SHA-256 digest, and the schema's SHA-256 digest; enforcement rejects trust inputs inside the candidate checkout. The evaluator resolves the explicit base and candidate commits, computes a canonical tree-to-tree effect digest, and rejects protected effects without a caller-supplied version 2 human authorization and trusted authorization schema.
 
+`validation-suites/fast.json` is the canonical Fast v1 authority. `config_digest` binds its bounded runner configuration; `manifest_digest` is SHA-256 over canonical compact sorted JSON with only `manifest_digest` omitted. The manifest and schema are protected bootstrap assets: the branch that introduces them cannot treat its own candidate-local bytes as trusted Fast authority. They become a usable trusted base only after external review, exact protected-change authorization, and merge.
+
 The `evidence-producer` role may only generate contracted output indirectly below
 `reports/runs`; it has no direct write, approval, rename, copy, or merge authority.
 

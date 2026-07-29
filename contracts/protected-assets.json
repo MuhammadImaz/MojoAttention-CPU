@@ -16,7 +16,7 @@
     {"category": "agent-policy", "paths": ["contracts/agent-authority.json"]},
     {"category": "codeowners", "paths": [".github/CODEOWNERS"]},
     {"category": "golden-data", "paths": ["fixtures/golden"]},
-    {"category": "required-check-policy", "paths": ["contracts/required-checks.json"]},
+    {"category": "required-check-policy", "paths": ["contracts/required-checks.json", "contracts/validation-suites"]},
     {"category": "generated-outputs", "paths": ["reports/README.md", "reports/release"]},
     {"category": "reference-oracles", "paths": ["src/mojoattention/backends/pytorch"]},
     {"category": "acceptance-contracts", "paths": ["contracts/acceptance"]},
