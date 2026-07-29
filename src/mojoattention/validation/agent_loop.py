@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import ctypes
+import fcntl
 import hashlib
 import json
+import os
 import re
+import secrets
+import stat
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, cast
@@ -667,3 +673,369 @@ def derive_journal_state(
         "retries_consumed": state.retries_consumed,
         "last_validation": last_validation,
     }
+
+
+_LOOP_ID = re.compile(r"^[0-9a-f]{32}$")
+_EVENT_FILE = re.compile(r"^([0-9]{8})\.json$")
+_MAX_RECORD_BYTES = 16 * 1024 * 1024
+
+
+def _identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _object_identity(value: os.stat_result) -> tuple[int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_mode)
+
+
+def _open_directory_at(parent_fd: int, name: str, *, create: bool = False) -> int:
+    if "/" in name or name in {"", ".", ".."}:
+        _reject("LOOP-304", "journal directory component is unsafe", component=name)
+    if create:
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except FileExistsError:
+            pass
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except OSError as error:
+        _reject("LOOP-304", "journal directory boundary is unavailable or unsafe", component=name, error=str(error))
+    value = os.fstat(descriptor)
+    if not stat.S_ISDIR(value.st_mode) or value.st_nlink < 2:
+        os.close(descriptor)
+        _reject("LOOP-304", "journal boundary is not a directory", component=name)
+    return descriptor
+
+
+def _read_regular_at(parent_fd: int, name: str) -> bytes:
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except OSError as error:
+        _reject("LOOP-305", "journal record cannot be opened safely", record=name, error=str(error))
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            _reject("LOOP-305", "journal record must be a single-link regular file", record=name)
+        chunks: list[bytes] = []
+        total = 0
+        while block := os.read(descriptor, 1024 * 1024):
+            total += len(block)
+            if total > _MAX_RECORD_BYTES:
+                _reject("LOOP-305", "journal record exceeds size limit", record=name)
+            chunks.append(block)
+        after = os.fstat(descriptor)
+        if _identity(before) != _identity(after):
+            _reject("LOOP-305", "journal record changed while being read", record=name)
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _write_exclusive_at(parent_fd: int, name: str, payload: bytes) -> None:
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_fd,
+        )
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("short journal write")
+            view = view[written:]
+        os.fsync(descriptor)
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+            descriptor = -1
+            os.unlink(name, dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        raise
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _rename_noreplace_at(parent_fd: int, source: str, target: str) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError:
+        _reject("LOOP-306", "atomic no-replace publication is unavailable")
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(parent_fd, os.fsencode(source), parent_fd, os.fsencode(target), 1) != 0:
+        error_number = ctypes.get_errno()
+        _reject(
+            "LOOP-302",
+            "journal publication target already exists or cannot be sealed",
+            target=target,
+            error=os.strerror(error_number),
+        )
+
+
+def _remove_owned_stage(parent_fd: int, name: str) -> None:
+    try:
+        stage_fd = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    try:
+        for child in os.listdir(stage_fd):
+            value = os.stat(child, dir_fd=stage_fd, follow_symlinks=False)
+            if stat.S_ISDIR(value.st_mode):
+                child_fd = os.open(child, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=stage_fd)
+                try:
+                    for leaf in os.listdir(child_fd):
+                        os.unlink(leaf, dir_fd=child_fd)
+                finally:
+                    os.close(child_fd)
+                os.rmdir(child, dir_fd=stage_fd)
+            else:
+                os.unlink(child, dir_fd=stage_fd)
+    finally:
+        os.close(stage_fd)
+    os.rmdir(name, dir_fd=parent_fd)
+    os.fsync(parent_fd)
+
+
+class AgentLoopJournal:
+    def __init__(self, project_root: Path, schema_source: SchemaSource) -> None:
+        if not project_root.is_absolute():
+            _reject("LOOP-304", "project root must be absolute")
+        try:
+            descriptor = os.open(project_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as error:
+            _reject("LOOP-304", "project root is unavailable or unsafe", error=str(error))
+        self._project_fd = descriptor
+        self._schema_source = schema_source
+
+    def __del__(self) -> None:
+        descriptor = getattr(self, "_project_fd", -1)
+        if descriptor >= 0:
+            with suppress(OSError):
+                os.close(descriptor)
+            self._project_fd = -1
+
+    def _loops_fd(self, *, create: bool) -> int:
+        reports_fd = _open_directory_at(self._project_fd, "reports", create=create)
+        try:
+            return _open_directory_at(reports_fd, "agent-loops", create=create)
+        finally:
+            os.close(reports_fd)
+
+    def start(self, immutable_metadata: dict[str, Any]) -> LoopState:
+        forbidden = {"record_type", "loop_id", "header_digest"}
+        supplied = sorted(forbidden.intersection(immutable_metadata))
+        if supplied:
+            _reject("LOOP-301", "caller supplied internally generated header fields", fields=supplied)
+        loops_fd = self._loops_fd(create=True)
+        loop_id = secrets.token_hex(16)
+        owner_token = secrets.token_hex(16)
+        stage_name = f".loop.{loop_id}.{owner_token}.tmp"
+        stage_created = False
+        try:
+            os.mkdir(stage_name, mode=0o700, dir_fd=loops_fd)
+            stage_created = True
+            stage_fd = _open_directory_at(loops_fd, stage_name)
+            try:
+                events_fd = _open_directory_at(stage_fd, "events", create=True)
+                try:
+                    header = seal_header(
+                        {
+                            **immutable_metadata,
+                            "record_type": "header",
+                            "loop_id": loop_id,
+                        }
+                    )
+                    controls = {
+                        key: header[key]
+                        for key in (
+                            "contract_digest",
+                            "source_revision",
+                            "source_tree",
+                            "trusted_base_revision",
+                            "trusted_base_tree",
+                            "assigned_role",
+                            "allowed_paths",
+                            "protected_paths",
+                        )
+                    }
+                    genesis = seal_event(
+                        {
+                            "record_type": "event",
+                            "schema_version": header["schema_version"],
+                            "loop_id": loop_id,
+                            "sequence": 1,
+                            "prior_event_digest": header["header_digest"],
+                            "attempt": 1,
+                            "control_binding": controls,
+                            "transition": "initialized",
+                            "status": "awaiting-validation",
+                            "validation_binding": None,
+                            "evidence_bindings": [],
+                            "diagnosis": None,
+                            "improvement_proof": None,
+                            "stop_reason": None,
+                            "actor_kind": "system",
+                            "timestamp": header["created_at"],
+                        }
+                    )
+                    replay_journal(header, [genesis], self._schema_source)
+                    _write_exclusive_at(stage_fd, "header.json", canonical_bytes(header) + b"\n")
+                    _write_exclusive_at(events_fd, "00000001.json", canonical_bytes(genesis) + b"\n")
+                    _write_exclusive_at(stage_fd, ".writer.lock", b"")
+                    os.fsync(events_fd)
+                finally:
+                    os.close(events_fd)
+                os.fsync(stage_fd)
+            finally:
+                os.close(stage_fd)
+            _rename_noreplace_at(loops_fd, stage_name, loop_id)
+            os.fsync(loops_fd)
+        except BaseException:
+            if stage_created:
+                _remove_owned_stage(loops_fd, stage_name)
+            raise
+        finally:
+            os.close(loops_fd)
+        return self.inspect(loop_id)
+
+    def _open_loop(self, loop_id: str) -> tuple[int, int]:
+        if not _LOOP_ID.fullmatch(loop_id):
+            _reject("LOOP-304", "loop identity is malformed")
+        loops_fd = self._loops_fd(create=False)
+        try:
+            loop_fd = _open_directory_at(loops_fd, loop_id)
+        finally:
+            os.close(loops_fd)
+        events_fd = _open_directory_at(loop_fd, "events")
+        return loop_fd, events_fd
+
+    def _read_chain(self, loop_fd: int, events_fd: int) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        loop_before = _identity(os.fstat(loop_fd))
+        events_before = _identity(os.fstat(events_fd))
+        try:
+            header = json.loads(_read_regular_at(loop_fd, "header.json"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as error:
+            _reject("LOOP-305", "journal header is malformed", error=str(error))
+        records: list[dict[str, Any]] = []
+        event_names: list[tuple[int, str]] = []
+        for name in os.listdir(events_fd):
+            match = _EVENT_FILE.fullmatch(name)
+            if match is not None:
+                event_names.append((int(match.group(1)), name))
+            elif not (name.startswith(".event.") and name.endswith(".tmp")):
+                _reject("LOOP-305", "journal event directory contains an unknown record", record=name)
+        for expected, (number, name) in enumerate(sorted(event_names), start=1):
+            if number != expected:
+                _reject("LOOP-004", "journal event filenames are not contiguous", expected=expected, actual=number)
+            try:
+                value = json.loads(_read_regular_at(events_fd, name))
+            except (json.JSONDecodeError, UnicodeDecodeError) as error:
+                _reject("LOOP-305", "journal event is malformed", record=name, error=str(error))
+            if not isinstance(value, dict):
+                _reject("LOOP-305", "journal event must be an object", record=name)
+            records.append(value)
+        if _identity(os.fstat(loop_fd)) != loop_before or _identity(os.fstat(events_fd)) != events_before:
+            _reject("LOOP-307", "journal parent changed while being read")
+        if not isinstance(header, dict):
+            _reject("LOOP-305", "journal header must be an object")
+        return header, records
+
+    def inspect(self, loop_id: str) -> LoopState:
+        loop_fd, events_fd = self._open_loop(loop_id)
+        try:
+            header, records = self._read_chain(loop_fd, events_fd)
+            return replay_journal(header, records, self._schema_source)
+        finally:
+            os.close(events_fd)
+            os.close(loop_fd)
+
+    def _assert_published_identity(self, loop_id: str, expected: tuple[int, int, int]) -> None:
+        loops_fd = self._loops_fd(create=False)
+        try:
+            reopened = _open_directory_at(loops_fd, loop_id)
+            try:
+                if _object_identity(os.fstat(reopened)) != expected:
+                    _reject("LOOP-307", "published journal identity changed")
+            finally:
+                os.close(reopened)
+        finally:
+            os.close(loops_fd)
+
+    def append(self, loop_id: str, event_fields: dict[str, Any]) -> LoopState:
+        forbidden = {"loop_id", "sequence", "prior_event_digest", "event_digest"}
+        supplied = sorted(forbidden.intersection(event_fields))
+        if supplied:
+            _reject("LOOP-301", "caller supplied internally generated event fields", fields=supplied)
+        loop_fd, events_fd = self._open_loop(loop_id)
+        lock_fd = -1
+        owned_temp: str | None = None
+        try:
+            lock_fd = os.open(".writer.lock", os.O_RDWR | os.O_NOFOLLOW, dir_fd=loop_fd)
+            lock_stat = os.fstat(lock_fd)
+            if not stat.S_ISREG(lock_stat.st_mode) or lock_stat.st_nlink != 1:
+                _reject("LOOP-305", "journal writer lock is unsafe")
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                _reject("LOOP-303", "another writer owns this loop")
+            loop_identity = _object_identity(os.fstat(loop_fd))
+            events_identity = _object_identity(os.fstat(events_fd))
+            self._assert_published_identity(loop_id, loop_identity)
+            header, records = self._read_chain(loop_fd, events_fd)
+            state = replay_journal(header, records, self._schema_source)
+            prior = state.events[-1].event_digest
+            event = seal_event(
+                {
+                    **event_fields,
+                    "loop_id": loop_id,
+                    "sequence": len(records) + 1,
+                    "prior_event_digest": prior,
+                }
+            )
+            replay_journal(header, [*records, event], self._schema_source)
+            if (
+                _object_identity(os.fstat(loop_fd)) != loop_identity
+                or _object_identity(os.fstat(events_fd)) != events_identity
+            ):
+                _reject("LOOP-307", "journal parent identity changed before append")
+            owner_token = secrets.token_hex(16)
+            temp_name = f".event.{owner_token}.tmp"
+            _write_exclusive_at(events_fd, temp_name, canonical_bytes(event) + b"\n")
+            owned_temp = temp_name
+            final_name = f"{event['sequence']:08d}.json"
+            _rename_noreplace_at(events_fd, owned_temp, final_name)
+            owned_temp = None
+            os.fsync(events_fd)
+            if (
+                _object_identity(os.fstat(loop_fd)) != loop_identity
+                or _object_identity(os.fstat(events_fd)) != events_identity
+            ):
+                _reject("LOOP-307", "journal parent identity changed after append")
+            self._assert_published_identity(loop_id, loop_identity)
+            header_after, records_after = self._read_chain(loop_fd, events_fd)
+            return replay_journal(header_after, records_after, self._schema_source)
+        finally:
+            if owned_temp is not None:
+                try:
+                    os.unlink(owned_temp, dir_fd=events_fd)
+                    os.fsync(events_fd)
+                except FileNotFoundError:
+                    pass
+            if lock_fd >= 0:
+                os.close(lock_fd)
+            os.close(events_fd)
+            os.close(loop_fd)
