@@ -26,6 +26,8 @@ from mojoattention.validation.evidence import (
 from mojoattention.validation.fast import (
     FAST_PROTOCOL_DIGEST,
     AdapterResult,
+    CheckAdapter,
+    FastCheck,
     FastError,
     FastRunResult,
     evidence_validations,
@@ -33,6 +35,7 @@ from mojoattention.validation.fast import (
     load_manifest,
     verify_fast_evidence,
 )
+from mojoattention.validation.fast_canaries import execute_false_green_canary
 from mojoattention.validation.host import probe
 from mojoattention.validation.identity import detect_identity, evaluate_identity
 from mojoattention.validation.paths import contains
@@ -298,8 +301,18 @@ def run_fast_validation(
     if trusted_context is None:
         raise ValueError("trusted Fast controls could not be acquired")
 
-    adapters = {item.validation_id: AdapterResult.passed for item in manifest.checks}
-    result = execute_checks(manifest, adapters)
+    adapters: dict[str, CheckAdapter] = {
+        item.validation_id: AdapterResult.passed for item in manifest.checks if item.kind == "foundation"
+    }
+    with tempfile.TemporaryDirectory(prefix="mojoattention-fast-canaries-") as canary_directory:
+
+        def canary_adapter(check: FastCheck) -> AdapterResult:
+            return execute_false_green_canary(check, Path(canary_directory), trusted_policy)
+
+        for item in manifest.checks:
+            if item.kind == "canary":
+                adapters[item.validation_id] = canary_adapter
+        result = execute_checks(manifest, adapters)
     if protected_errors:
         first = result.observations[0]
         rejected = type(first)(
