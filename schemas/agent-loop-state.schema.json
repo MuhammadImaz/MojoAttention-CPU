@@ -3,20 +3,36 @@
   "$id": "https://example.invalid/mojoattention/agent-loop-state.schema.json",
   "title": "MojoAttention Agent Loop Journal Record",
   "oneOf": [
-    {"$ref": "#/$defs/header"},
-    {"$ref": "#/$defs/event"}
+    {
+      "$ref": "#/$defs/header"
+    },
+    {
+      "$ref": "#/$defs/event"
+    }
   ],
   "$defs": {
-    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-    "revision": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "loop_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "revision": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "loop_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
     "id": {
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9]+(?:[-.][A-Za-z0-9]+)*$"
     },
-    "validation_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9]*-[0-9]{3}$"},
+    "validation_id": {
+      "type": "string",
+      "pattern": "^[A-Z][A-Z0-9]*-[0-9]{3}$"
+    },
     "timestamp": {
       "type": "string",
       "format": "date-time",
@@ -31,37 +47,154 @@
     "error": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code", "message", "context"],
+      "required": [
+        "code",
+        "message",
+        "context"
+      ],
       "properties": {
-        "code": {"type": "string", "pattern": "^LOOP-[0-9]{3}$"},
-        "message": {"type": "string", "minLength": 1, "maxLength": 4096},
-        "context": {"type": "object"}
+        "code": {
+          "type": "string",
+          "pattern": "^LOOP-[0-9]{3}$"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "context": {
+          "type": "object"
+        }
       }
     },
     "validation_binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["validation_id", "status", "errors"],
+      "required": [
+        "validation_id",
+        "status",
+        "errors"
+      ],
       "properties": {
-        "validation_id": {"$ref": "#/$defs/validation_id"},
-        "status": {"enum": ["pass", "fail", "invalid"]},
+        "validation_id": {
+          "$ref": "#/$defs/validation_id"
+        },
+        "status": {
+          "enum": [
+            "pass",
+            "fail",
+            "invalid"
+          ]
+        },
         "errors": {
           "type": "array",
           "uniqueItems": true,
-          "items": {"$ref": "#/$defs/error"}
+          "items": {
+            "$ref": "#/$defs/error"
+          }
         }
       }
     },
     "evidence_binding": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["run_id", "evidence_digest", "source_revision", "source_tree", "contract_digest"],
+      "required": [
+        "run_id",
+        "evidence_digest",
+        "source_revision",
+        "source_tree",
+        "contract_digest",
+        "lifecycle",
+        "independently_verified",
+        "verdict",
+        "validation_ids"
+      ],
       "properties": {
-        "run_id": {"$ref": "#/$defs/loop_id"},
-        "evidence_digest": {"$ref": "#/$defs/digest"},
-        "source_revision": {"$ref": "#/$defs/revision"},
-        "source_tree": {"$ref": "#/$defs/revision"},
-        "contract_digest": {"$ref": "#/$defs/digest"}
+        "run_id": {
+          "$ref": "#/$defs/loop_id"
+        },
+        "evidence_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "source_tree": {
+          "$ref": "#/$defs/revision"
+        },
+        "contract_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "lifecycle": {
+          "const": "complete"
+        },
+        "independently_verified": {
+          "const": true
+        },
+        "verdict": {
+          "enum": [
+            "pass",
+            "product-fail",
+            "infrastructure-invalid",
+            "contract-invalid"
+          ]
+        },
+        "validation_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/validation_id"
+          }
+        }
+      }
+    },
+    "control_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_digest",
+        "source_revision",
+        "source_tree",
+        "trusted_base_revision",
+        "trusted_base_tree",
+        "assigned_role",
+        "allowed_paths",
+        "protected_paths"
+      ],
+      "properties": {
+        "contract_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "source_tree": {
+          "$ref": "#/$defs/revision"
+        },
+        "trusted_base_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "trusted_base_tree": {
+          "$ref": "#/$defs/revision"
+        },
+        "assigned_role": {
+          "$ref": "#/$defs/id"
+        },
+        "allowed_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/canonical_path"
+          }
+        },
+        "protected_paths": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/canonical_path"
+          }
+        }
       }
     },
     "diagnosis": {
@@ -77,47 +210,95 @@
         "reproduction_argv"
       ],
       "properties": {
-        "validation_id": {"$ref": "#/$defs/validation_id"},
-        "verdict": {
-          "enum": ["product-fail", "infrastructure-invalid", "contract-invalid"]
+        "validation_id": {
+          "$ref": "#/$defs/validation_id"
         },
-        "error_code": {"type": "string", "pattern": "^(?:LOOP|FAST)-[0-9]{3}$"},
-        "failure_signature": {"$ref": "#/$defs/digest"},
-        "evidence_digest": {"$ref": "#/$defs/digest"},
+        "verdict": {
+          "enum": [
+            "product-fail",
+            "infrastructure-invalid",
+            "contract-invalid"
+          ]
+        },
+        "error_code": {
+          "type": "string",
+          "pattern": "^(?:LOOP|FAST)-[0-9]{3}$"
+        },
+        "failure_signature": {
+          "$ref": "#/$defs/digest"
+        },
+        "evidence_digest": {
+          "$ref": "#/$defs/digest"
+        },
         "affected_paths": {
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
-          "items": {"$ref": "#/$defs/canonical_path"}
+          "items": {
+            "$ref": "#/$defs/canonical_path"
+          }
         },
         "reproduction_argv": {
           "type": "array",
           "minItems": 1,
           "maxItems": 64,
-          "items": {"type": "string", "minLength": 1, "maxLength": 1024}
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
         }
       }
     },
     "metric": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["name", "direction", "before", "after"],
+      "required": [
+        "name",
+        "direction",
+        "before",
+        "after"
+      ],
       "properties": {
-        "name": {"$ref": "#/$defs/id"},
-        "direction": {"enum": ["increase", "decrease"]},
-        "before": {"type": "integer"},
-        "after": {"type": "integer"}
+        "name": {
+          "$ref": "#/$defs/id"
+        },
+        "direction": {
+          "enum": [
+            "increase",
+            "decrease"
+          ]
+        },
+        "before": {
+          "type": "integer"
+        },
+        "after": {
+          "type": "integer"
+        }
       }
     },
     "improvement_proof": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["validation_id", "case_id", "config_digest", "metric"],
+      "required": [
+        "validation_id",
+        "case_id",
+        "config_digest",
+        "metric"
+      ],
       "properties": {
-        "validation_id": {"$ref": "#/$defs/validation_id"},
-        "case_id": {"$ref": "#/$defs/id"},
-        "config_digest": {"$ref": "#/$defs/digest"},
-        "metric": {"$ref": "#/$defs/metric"}
+        "validation_id": {
+          "$ref": "#/$defs/validation_id"
+        },
+        "case_id": {
+          "$ref": "#/$defs/id"
+        },
+        "config_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "metric": {
+          "$ref": "#/$defs/metric"
+        }
       }
     },
     "header": {
@@ -140,28 +321,58 @@
         "header_digest"
       ],
       "properties": {
-        "record_type": {"const": "header"},
-        "schema_version": {"const": "1.0.0"},
-        "loop_id": {"$ref": "#/$defs/loop_id"},
-        "contract_digest": {"$ref": "#/$defs/digest"},
-        "source_revision": {"$ref": "#/$defs/revision"},
-        "source_tree": {"$ref": "#/$defs/revision"},
-        "trusted_base_revision": {"$ref": "#/$defs/revision"},
-        "trusted_base_tree": {"$ref": "#/$defs/revision"},
-        "assigned_role": {"$ref": "#/$defs/id"},
-        "retry_budget": {"type": "integer", "minimum": 0, "maximum": 5},
+        "record_type": {
+          "const": "header"
+        },
+        "schema_version": {
+          "const": "1.0.0"
+        },
+        "loop_id": {
+          "$ref": "#/$defs/loop_id"
+        },
+        "contract_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "source_tree": {
+          "$ref": "#/$defs/revision"
+        },
+        "trusted_base_revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "trusted_base_tree": {
+          "$ref": "#/$defs/revision"
+        },
+        "assigned_role": {
+          "$ref": "#/$defs/id"
+        },
+        "retry_budget": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
         "allowed_paths": {
           "type": "array",
           "uniqueItems": true,
-          "items": {"$ref": "#/$defs/canonical_path"}
+          "items": {
+            "$ref": "#/$defs/canonical_path"
+          }
         },
         "protected_paths": {
           "type": "array",
           "uniqueItems": true,
-          "items": {"$ref": "#/$defs/canonical_path"}
+          "items": {
+            "$ref": "#/$defs/canonical_path"
+          }
         },
-        "created_at": {"$ref": "#/$defs/timestamp"},
-        "header_digest": {"$ref": "#/$defs/digest"}
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "header_digest": {
+          "$ref": "#/$defs/digest"
+        }
       }
     },
     "event": {
@@ -175,6 +386,7 @@
         "prior_event_digest",
         "event_digest",
         "attempt",
+        "control_binding",
         "transition",
         "status",
         "validation_binding",
@@ -186,32 +398,88 @@
         "timestamp"
       ],
       "properties": {
-        "record_type": {"const": "event"},
-        "schema_version": {"const": "1.0.0"},
-        "loop_id": {"$ref": "#/$defs/loop_id"},
-        "sequence": {"type": "integer", "minimum": 1},
-        "prior_event_digest": {"$ref": "#/$defs/digest"},
-        "event_digest": {"$ref": "#/$defs/digest"},
-        "attempt": {"type": "integer", "minimum": 1, "maximum": 5},
+        "record_type": {
+          "const": "event"
+        },
+        "schema_version": {
+          "const": "1.0.0"
+        },
+        "loop_id": {
+          "$ref": "#/$defs/loop_id"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "prior_event_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "event_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "control_binding": {
+          "$ref": "#/$defs/control_binding"
+        },
         "transition": {
-          "enum": ["initialized", "validation-recorded", "retry-authorized", "awaiting-human-review", "stopped"]
+          "enum": [
+            "initialized",
+            "validation-recorded",
+            "retry-authorized",
+            "awaiting-human-review",
+            "stopped"
+          ]
         },
         "status": {
-          "enum": ["awaiting-validation", "validation-failed", "retry-authorized", "awaiting-human-review", "stopped"]
+          "enum": [
+            "awaiting-validation",
+            "validation-failed",
+            "retry-authorized",
+            "awaiting-human-review",
+            "stopped"
+          ]
         },
         "validation_binding": {
-          "anyOf": [{"$ref": "#/$defs/validation_binding"}, {"type": "null"}]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/validation_binding"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "evidence_bindings": {
           "type": "array",
+          "maxItems": 1,
           "uniqueItems": true,
-          "items": {"$ref": "#/$defs/evidence_binding"}
+          "items": {
+            "$ref": "#/$defs/evidence_binding"
+          }
         },
         "diagnosis": {
-          "anyOf": [{"$ref": "#/$defs/diagnosis"}, {"type": "null"}]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/diagnosis"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "improvement_proof": {
-          "anyOf": [{"$ref": "#/$defs/improvement_proof"}, {"type": "null"}]
+          "anyOf": [
+            {
+              "$ref": "#/$defs/improvement_proof"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "stop_reason": {
           "anyOf": [
@@ -231,11 +499,22 @@
                 "human-escalation"
               ]
             },
-            {"type": "null"}
+            {
+              "type": "null"
+            }
           ]
         },
-        "actor_kind": {"enum": ["agent", "validator", "system", "human"]},
-        "timestamp": {"$ref": "#/$defs/timestamp"}
+        "actor_kind": {
+          "enum": [
+            "agent",
+            "validator",
+            "system",
+            "human"
+          ]
+        },
+        "timestamp": {
+          "$ref": "#/$defs/timestamp"
+        }
       }
     }
   }
