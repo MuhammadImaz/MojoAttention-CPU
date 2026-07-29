@@ -79,6 +79,49 @@ class HostAdapterTests(unittest.TestCase):
                 self.assertTrue(_verify_complete_cached(run, schema))
                 self.assertEqual(2, verify.call_count)
 
+    def test_complete_run_verification_cache_rejects_mutation_during_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / ("a" * 32 + ".complete")
+            run.mkdir()
+            leaf = run / "evidence.json"
+            leaf.write_text("first", encoding="utf-8")
+            schema = root / "schema.json"
+            schema.write_text("{}", encoding="utf-8")
+
+            def mutate(*_args: object, **_kwargs: object) -> object:
+                leaf.write_text("changed-size", encoding="utf-8")
+                result = unittest.mock.Mock()
+                result.errors = ()
+                return result
+
+            with patch("mojoattention.validation.host.verify_evidence", side_effect=mutate) as verify:
+                self.assertFalse(_verify_complete_cached(run, schema))
+                self.assertEqual(1, verify.call_count)
+                self.assertFalse(_RUN_VERIFICATION_CACHE)
+
+    def test_complete_run_verification_cache_binds_schema_bytes_and_rejects_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / ("a" * 32 + ".complete")
+            run.mkdir()
+            (run / "evidence.json").write_text("first", encoding="utf-8")
+            schema = root / "schema.json"
+            schema.write_text("{}", encoding="utf-8")
+            with patch("mojoattention.validation.host.verify_evidence") as verify:
+                verify.return_value.errors = ()
+                self.assertTrue(_verify_complete_cached(run, schema))
+                schema.write_text('{"type":"object"}', encoding="utf-8")
+                self.assertTrue(_verify_complete_cached(run, schema))
+                self.assertEqual(2, verify.call_count)
+
+            target = root / "target.json"
+            target.write_text("{}", encoding="utf-8")
+            schema.unlink()
+            schema.symlink_to(target)
+            with self.assertRaises(OSError):
+                _verify_complete_cached(run, schema)
+
 
 if __name__ == "__main__":
     unittest.main()

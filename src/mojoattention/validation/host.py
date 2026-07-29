@@ -4,17 +4,16 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
 from collections import OrderedDict
 from pathlib import Path
 
-from mojoattention.validation.evidence import verify_evidence
+from mojoattention.validation.evidence import digest_bytes, verify_evidence
 from mojoattention.validation.preflight import HostSnapshot, RunState
 
 _RUN_VERIFICATION_CACHE_LIMIT = 64
-_RUN_VERIFICATION_CACHE: OrderedDict[
-    tuple[str, tuple[tuple[str, int, int, int, int], ...], tuple[int, int, int, int]], bool
-] = OrderedDict()
+_RUN_VERIFICATION_CACHE: OrderedDict[tuple[str, tuple[tuple[str, int, int, int, int], ...], str], bool] = OrderedDict()
 
 
 def _memory(path: Path = Path("/proc/meminfo")) -> tuple[int, int]:
@@ -106,18 +105,39 @@ def _run_signature(path: Path) -> tuple[tuple[str, int, int, int, int], ...]:
     return tuple(entries)
 
 
+def _schema_snapshot(path: Path) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise OSError("evidence schema must be a single-link regular file")
+        chunks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            chunks.append(block)
+        after = os.fstat(descriptor)
+        identity = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, name) != getattr(after, name) for name in identity):
+            raise OSError("evidence schema changed while being read")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
 def _verify_complete_cached(entry: Path, schema_path: Path) -> bool:
-    schema = schema_path.stat(follow_symlinks=False)
+    before = _run_signature(entry)
+    schema = _schema_snapshot(schema_path)
     key = (
         str(entry.resolve(strict=True)),
-        _run_signature(entry),
-        (schema.st_ino, schema.st_size, schema.st_mtime_ns, schema.st_ctime_ns),
+        before,
+        digest_bytes(schema),
     )
     cached = _RUN_VERIFICATION_CACHE.get(key)
     if cached is not None:
         _RUN_VERIFICATION_CACHE.move_to_end(key)
         return cached
-    valid = not verify_evidence(entry, schema_path).errors
+    valid = not verify_evidence(entry, schema).errors
+    if _run_signature(entry) != before:
+        return False
     _RUN_VERIFICATION_CACHE[key] = valid
     while len(_RUN_VERIFICATION_CACHE) > _RUN_VERIFICATION_CACHE_LIMIT:
         _RUN_VERIFICATION_CACHE.popitem(last=False)

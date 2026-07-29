@@ -434,12 +434,37 @@ class EvidenceContractTests(unittest.TestCase):
                         (ROOT / "contracts" / "agent-authority.json").read_bytes()
                         if path == "contracts/agent-authority.json"
                         else SCHEMA.read_bytes()
+                        if path == "schemas/validation-evidence.schema.json"
+                        else source.read_bytes()
                     ),
                 ),
             ):
                 self.assertEqual(0, main(argv))
             complete = next((project / "reports" / "runs").glob("*.complete"))
             self.assertEqual((), verify_evidence(complete, schema_dir / SCHEMA.name).errors)
+
+            with (
+                patch.dict(os.environ, {"MOJOATTENTION_PROJECT_ROOT": str(project)}),
+                patch("mojoattention.cli.main.validate_contract", return_value=()),
+                patch(
+                    "mojoattention.cli.main.evaluate_and_compose_trusted_context",
+                    return_value=(context(), ()),
+                ),
+                patch("mojoattention.cli.main.evaluate", return_value=SimpleNamespace(exit_code=0)),
+                patch("mojoattention.cli.main.probe"),
+                patch("mojoattention.cli.main._require_candidate_checkout"),
+                patch(
+                    "mojoattention.cli.main._candidate_blob",
+                    side_effect=lambda _root, _revision, path: (
+                        (ROOT / "contracts" / "agent-authority.json").read_bytes()
+                        if path == "contracts/agent-authority.json"
+                        else SCHEMA.read_bytes()
+                        if path == "schemas/validation-evidence.schema.json"
+                        else b"not candidate bytes"
+                    ),
+                ),
+            ):
+                self.assertEqual(EXIT_CODES["contract-invalid"], main(argv))
 
     def test_writer_context_is_detached_and_run_id_is_not_caller_selectable(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

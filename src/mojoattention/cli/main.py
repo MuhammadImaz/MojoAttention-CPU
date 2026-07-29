@@ -396,13 +396,10 @@ def main(argv: list[str] | None = None) -> int:
                         allowed_relative = allowed_root.resolve(strict=True).relative_to(root.resolve()).as_posix()
                         if not any(contains(contracted, allowed_relative) for contracted in contracted_roots):
                             raise ValueError("attachment root is outside contracted authority")
-                    snapshots.append(
-                        (
-                            read_approved_attachment(Path(descriptor["source"]), allowed_roots),
-                            descriptor["path"],
-                            descriptor["media_type"],
-                        )
-                    )
+                    attachment_bytes = read_approved_attachment(Path(descriptor["source"]), allowed_roots)
+                    if attachment_bytes != _candidate_blob(root, candidate_revision, source_relative):
+                        raise ValueError("attachment bytes are not bound to the candidate revision")
+                    snapshots.append((attachment_bytes, descriptor["path"], descriptor["media_type"]))
                 _require_candidate_checkout(root, candidate_revision)
                 writer = EvidenceWriter(output, trusted_context)
                 leaves: list[Attachment] = [
@@ -462,7 +459,8 @@ def main(argv: list[str] | None = None) -> int:
                 exit_code = EVIDENCE_EXIT_CODES["infrastructure-invalid"]
             finally:
                 if writer is not None:
-                    writer.abort()
+                    with suppress(OSError):
+                        writer.abort()
             if not _write_payload(canonical_bytes(production_payload, newline=True).decode(), args.json_path):
                 return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
             return exit_code
