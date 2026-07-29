@@ -1,34 +1,31 @@
 from __future__ import annotations
 
-import hashlib
 import json
-from collections.abc import Mapping
+import os
+import subprocess
+import time
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Literal
 
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 from jsonschema.exceptions import SchemaError  # type: ignore[import-untyped]
 
+from mojoattention.validation.evidence import canonical_bytes, digest_bytes
+
 Verdict = Literal["pass", "product-fail", "infrastructure-invalid", "contract-invalid"]
 
 
-def _canonical(value: object) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
-
-
-def _digest(value: object) -> str:
-    return f"sha256:{hashlib.sha256(_canonical(value)).hexdigest()}"
-
-
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FastError:
     code: str
     message: str
     context: Mapping[str, object]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FastCheck:
     validation_id: str
     case_id: str
@@ -39,7 +36,7 @@ class FastCheck:
     reproduction_argv: tuple[str, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class RunnerConfig:
     timeout_seconds: int
     max_output_bytes: int
@@ -49,7 +46,7 @@ class RunnerConfig:
     shard_total: int
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class FastManifest:
     schema_version: str
     suite_id: str
@@ -62,7 +59,7 @@ class FastManifest:
     checks: tuple[FastCheck, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Observation:
     validation_id: str
     case_id: str
@@ -80,6 +77,44 @@ class Observation:
     failure_class: Verdict = "product-fail"
 
 
+@dataclass(frozen=True, slots=True)
+class ProcessResult:
+    returncode: int | None
+    stdout: bytes
+    stderr: bytes
+    output_truncated: bool
+    failure_class: Verdict | None = None
+    error: FastError | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AdapterResult:
+    observation: Observation
+    errors: tuple[FastError, ...] = ()
+
+    @classmethod
+    def passed(cls, check: FastCheck) -> AdapterResult:
+        return cls(_completed_observation(check, "pass", "product-fail"))
+
+    @classmethod
+    def failed(cls, check: FastCheck, failure_class: Verdict, error: FastError) -> AdapterResult:
+        if failure_class == "pass":
+            raise ValueError("a failed adapter result cannot use the pass verdict")
+        return cls(_completed_observation(check, "fail", failure_class), (error,))
+
+
+@dataclass(frozen=True, slots=True)
+class FastRunResult:
+    verdict: Verdict
+    observations: tuple[Observation, ...]
+    errors: tuple[FastError, ...]
+    elapsed_ns: int
+    elapsed_unit: Literal["nanoseconds"] = "nanoseconds"
+
+
+CheckAdapter = Callable[[FastCheck], AdapterResult]
+
+
 def load_manifest(manifest_bytes: bytes, schema_bytes: bytes) -> FastManifest:
     try:
         schema = json.loads(schema_bytes)
@@ -92,10 +127,10 @@ def load_manifest(manifest_bytes: bytes, schema_bytes: bytes) -> FastManifest:
         raise ValueError(f"Fast manifest is schema-invalid: {errors[0].message if errors else 'not an object'}")
     unsigned = dict(value)
     claimed_manifest = unsigned.pop("manifest_digest")
-    if claimed_manifest != _digest(unsigned):
+    if claimed_manifest != digest_bytes(canonical_bytes(unsigned)):
         raise ValueError("Fast manifest digest mismatch")
     config = value["runner_config"]
-    if value["config_digest"] != _digest(config):
+    if value["config_digest"] != digest_bytes(canonical_bytes(config)):
         raise ValueError("Fast runner configuration digest mismatch")
     shard = config["shard"]
     checks = tuple(
@@ -132,6 +167,113 @@ def load_manifest(manifest_bytes: bytes, schema_bytes: bytes) -> FastManifest:
 
 def _error(code: str, message: str, **context: object) -> FastError:
     return FastError(code, message, MappingProxyType(context))
+
+
+def _completed_observation(check: FastCheck, status: Literal["pass", "fail"], failure_class: Verdict) -> Observation:
+    return Observation(
+        validation_id=check.validation_id,
+        case_id=check.case_id,
+        seed=check.seed,
+        selected=check.required_count,
+        collected=check.required_count,
+        completed=check.required_count,
+        skipped=0,
+        xfailed=0,
+        deselected=0,
+        collection_errors=0,
+        shard_index=0,
+        shard_total=1,
+        status=status,
+        failure_class=failure_class,
+    )
+
+
+def _reject_recursive_or_unbounded(argv: tuple[str, ...]) -> None:
+    normalized = tuple(part.rstrip("/") for part in argv)
+    if not normalized:
+        raise ValueError("subprocess argv must not be empty")
+    if normalized[0].endswith("quality.sh"):
+        raise ValueError("Fast cannot invoke the complete quality script")
+    if "pytest" in normalized:
+        pytest_index = normalized.index("pytest")
+        selections = tuple(part for part in normalized[pytest_index + 1 :] if not part.startswith("-"))
+        if not selections or any(item == "tests" for item in selections):
+            raise ValueError("Fast pytest execution requires focused bounded selections")
+    if "validate" in normalized and "--suite" in normalized:
+        suite_index = normalized.index("--suite")
+        if suite_index + 1 < len(normalized) and normalized[suite_index + 1] == "fast":
+            raise ValueError("recursive Fast execution is forbidden")
+
+
+def run_bounded_argv(argv: tuple[str, ...], cwd: Path, config: RunnerConfig) -> ProcessResult:
+    _reject_recursive_or_unbounded(argv)
+    environment = {name: os.environ[name] for name in config.environment if name in os.environ}
+    environment["LC_ALL"] = config.locale
+    try:
+        completed = subprocess.run(
+            argv,
+            cwd=cwd,
+            env=environment,
+            shell=False,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=config.timeout_seconds,
+            check=False,
+        )
+    except FileNotFoundError:
+        error = _error("FAST-EXEC-001", "required executable is unavailable", executable=argv[0])
+        return ProcessResult(None, b"", b"", False, "infrastructure-invalid", error)
+    except subprocess.TimeoutExpired:
+        error = _error("FAST-EXEC-002", "bounded subprocess timed out", timeout_seconds=config.timeout_seconds)
+        return ProcessResult(None, b"", b"", False, "infrastructure-invalid", error)
+    except OSError:
+        error = _error("FAST-EXEC-003", "bounded subprocess could not execute")
+        return ProcessResult(None, b"", b"", False, "infrastructure-invalid", error)
+    stdout = completed.stdout or b""
+    stderr = completed.stderr or b""
+    limit = config.max_output_bytes
+    truncated = len(stdout) > limit or len(stderr) > limit
+    return ProcessResult(completed.returncode, stdout[:limit], stderr[:limit], truncated)
+
+
+def execute_checks(
+    manifest: FastManifest,
+    adapters: Mapping[str, CheckAdapter],
+    *,
+    clock: Callable[[], int] = time.monotonic_ns,
+) -> FastRunResult:
+    started = clock()
+    observations: list[Observation] = []
+    adapter_errors: list[FastError] = []
+    for check in manifest.checks:
+        adapter = adapters.get(check.validation_id)
+        if adapter is None:
+            adapter_errors.append(
+                _error("FAST-ADAPTER-001", "required validation adapter is missing", validation_id=check.validation_id)
+            )
+            continue
+        try:
+            result = adapter(check)
+        except Exception:
+            adapter_errors.append(
+                _error(
+                    "FAST-ADAPTER-002",
+                    "validation adapter failed to produce a structured result",
+                    validation_id=check.validation_id,
+                )
+            )
+            observations.append(_completed_observation(check, "fail", "infrastructure-invalid"))
+            continue
+        observations.append(result.observation)
+        adapter_errors.extend(result.errors)
+    elapsed_ns = max(0, clock() - started)
+    verdict, inventory_errors = evaluate_observations(manifest, tuple(observations))
+    errors = (*adapter_errors, *inventory_errors)
+    if any(error.code == "FAST-ADAPTER-001" for error in adapter_errors):
+        verdict = "contract-invalid"
+    elif any(error.code == "FAST-ADAPTER-002" for error in adapter_errors) and verdict != "contract-invalid":
+        verdict = "infrastructure-invalid"
+    return FastRunResult(verdict, tuple(observations), tuple(errors), elapsed_ns)
 
 
 def evaluate_observations(
