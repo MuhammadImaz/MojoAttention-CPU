@@ -123,8 +123,8 @@ def _compose_trusted_evaluation_context(
     payload.update(inspection.identity)
     payload.update(
         {
-            "source_revision": inspection.identity["trusted_base_revision"],
-            "source_tree": inspection.identity["trusted_base_tree"],
+            "source_revision": inspection.identity["candidate_revision"],
+            "source_tree": inspection.identity["candidate_tree"],
             "trusted_schema_oid": git_blob_oid(trusted_policy.schema_bytes),
             "trusted_schema_digest": trusted_policy.schema_digest,
             "change_set_digest": inspection.change_set_digest,

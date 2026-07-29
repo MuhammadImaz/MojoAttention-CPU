@@ -4,11 +4,16 @@ import os
 import platform
 import re
 import shutil
+import stat
 import subprocess
+from collections import OrderedDict
 from pathlib import Path
 
-from mojoattention.validation.evidence import verify_evidence
+from mojoattention.validation.evidence import digest_bytes, verify_evidence
 from mojoattention.validation.preflight import HostSnapshot, RunState
+
+_RUN_VERIFICATION_CACHE_LIMIT = 64
+_RUN_VERIFICATION_CACHE: OrderedDict[tuple[str, tuple[tuple[str, int, int, int, int], ...], str], bool] = OrderedDict()
 
 
 def _memory(path: Path = Path("/proc/meminfo")) -> tuple[int, int]:
@@ -84,6 +89,63 @@ def _marker_state(name: str) -> RunState | None:
     return None
 
 
+def _run_signature(path: Path) -> tuple[tuple[str, int, int, int, int], ...]:
+    entries: list[tuple[str, int, int, int, int]] = []
+    for item in sorted(path.rglob("*")):
+        value = item.stat(follow_symlinks=False)
+        entries.append(
+            (
+                item.relative_to(path).as_posix(),
+                value.st_mode,
+                value.st_ino,
+                value.st_size,
+                value.st_ctime_ns,
+            )
+        )
+    return tuple(entries)
+
+
+def _schema_snapshot(path: Path) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise OSError("evidence schema must be a single-link regular file")
+        chunks: list[bytes] = []
+        while block := os.read(descriptor, 1024 * 1024):
+            chunks.append(block)
+        after = os.fstat(descriptor)
+        identity = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, name) != getattr(after, name) for name in identity):
+            raise OSError("evidence schema changed while being read")
+        return b"".join(chunks)
+    finally:
+        os.close(descriptor)
+
+
+def _verify_complete_cached(entry: Path, schema_path: Path) -> bool:
+    before = _run_signature(entry)
+    schema = _schema_snapshot(schema_path)
+    key = (
+        str(entry.resolve(strict=True)),
+        before,
+        digest_bytes(schema),
+    )
+    cached = _RUN_VERIFICATION_CACHE.get(key)
+    if cached is not None:
+        if _run_signature(entry) != before:
+            return False
+        _RUN_VERIFICATION_CACHE.move_to_end(key)
+        return cached
+    valid = not verify_evidence(entry, schema).errors
+    if _run_signature(entry) != before:
+        return False
+    _RUN_VERIFICATION_CACHE[key] = valid
+    while len(_RUN_VERIFICATION_CACHE) > _RUN_VERIFICATION_CACHE_LIMIT:
+        _RUN_VERIFICATION_CACHE.popitem(last=False)
+    return valid
+
+
 def _run_state(root: Path) -> RunState:
     runs = root / "reports" / "runs"
     try:
@@ -100,8 +162,7 @@ def _run_state(root: Path) -> RunState:
             match = re.fullmatch(r"([0-9a-f]{32})\.complete", entry.name)
             if match is None:
                 return RunState.UNSEALED
-            verification = verify_evidence(entry, root / "schemas" / "validation-evidence.schema.json")
-            if verification.errors:
+            if not _verify_complete_cached(entry, root / "schemas" / "validation-evidence.schema.json"):
                 return RunState.UNSEALED
         return RunState.IDLE
     except OSError:

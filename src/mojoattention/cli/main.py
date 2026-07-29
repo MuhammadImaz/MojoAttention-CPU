@@ -15,7 +15,13 @@ from mojoattention.config import ProjectPolicy
 from mojoattention.validation.acceptance import ContractContext, ContractError, validate_contract
 from mojoattention.validation.authority import authorize_read, validate_manifest
 from mojoattention.validation.evidence import EXIT_CODES as EVIDENCE_EXIT_CODES
-from mojoattention.validation.evidence import Attachment, EvidenceWriter, canonical_bytes, verify_evidence
+from mojoattention.validation.evidence import (
+    Attachment,
+    EvidenceWriter,
+    canonical_bytes,
+    read_approved_attachment,
+    verify_evidence,
+)
 from mojoattention.validation.host import probe
 from mojoattention.validation.identity import detect_identity, evaluate_identity
 from mojoattention.validation.paths import contains
@@ -97,10 +103,109 @@ def _read_protected_caller_bytes(root: Path, path_value: str) -> bytes:
     resolved_root = root.resolve()
     if lexical_path.absolute().is_relative_to(resolved_root):
         raise OSError("trusted input must be outside the candidate checkout")
-    path = candidate_path.resolve(strict=True)
-    if path.is_relative_to(resolved_root):
+    path = candidate_path.absolute()
+    if path.resolve(strict=True).is_relative_to(resolved_root):
         raise OSError("trusted input must be outside the candidate checkout")
-    return path.read_bytes()
+    descriptors: list[int] = []
+    try:
+        current = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        descriptors.append(current)
+        for component in path.parts[1:-1]:
+            current = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=current)
+            descriptors.append(current)
+        parent_before = [
+            (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_nlink,
+                value.st_size,
+                value.st_mtime_ns,
+                value.st_ctime_ns,
+            )
+            for value in (os.fstat(item) for item in descriptors)
+        ]
+        descriptor = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=current)
+        try:
+            before = os.fstat(descriptor)
+            if not os.path.isfile(f"/proc/self/fd/{descriptor}") or before.st_nlink != 1:
+                raise OSError("trusted input must be a single-link regular file")
+            chunks: list[bytes] = []
+            while block := os.read(descriptor, 1024 * 1024):
+                chunks.append(block)
+            after = os.fstat(descriptor)
+            identity = ("st_dev", "st_ino", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")
+            if any(getattr(before, name) != getattr(after, name) for name in identity):
+                raise OSError("trusted input changed while being read")
+            parent_after = [
+                (
+                    value.st_dev,
+                    value.st_ino,
+                    value.st_mode,
+                    value.st_nlink,
+                    value.st_size,
+                    value.st_mtime_ns,
+                    value.st_ctime_ns,
+                )
+                for value in (os.fstat(item) for item in descriptors)
+            ]
+            if parent_before != parent_after:
+                raise OSError("trusted input parent changed while being read")
+            return b"".join(chunks)
+        finally:
+            os.close(descriptor)
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
+def _candidate_blob(root: Path, revision: str, path: str) -> bytes:
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_PAGER": "cat",
+        "LC_ALL": "C",
+    }
+    result = subprocess.run(
+        ["git", "-c", "core.hooksPath=", "-c", "protocol.file.allow=never", "show", f"{revision}:{path}"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        env=environment,
+    )
+    if result.returncode != 0:
+        raise ValueError("candidate control blob is unavailable")
+    return result.stdout
+
+
+def _require_candidate_checkout(root: Path, revision: str) -> None:
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "LC_ALL": "C",
+    }
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+        env=environment,
+    )
+    dirty = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=no"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+        env=environment,
+    )
+    if head.returncode != 0 or head.stdout.strip() != revision or dirty.returncode != 0 or dirty.stdout:
+        raise ValueError("candidate checkout identity or tracked cleanliness is invalid")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -173,6 +278,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "evidence":
         if args.evidence_command == "produce":
+            writer: EvidenceWriter | None = None
             try:
                 root = _root()
                 if args.output != "reports/runs":
@@ -226,6 +332,18 @@ def main(argv: list[str] | None = None) -> int:
                 if trusted_context is None:
                     raise ValueError("trusted evaluation inputs could not be acquired")
                 resolved_context = trusted_context.evidence_context()
+                candidate_revision = resolved_context["candidate_revision"]
+                _require_candidate_checkout(root, candidate_revision)
+                authority_manifest = json.loads(
+                    _candidate_blob(root, candidate_revision, "contracts/agent-authority.json")
+                )
+                evidence_schema = _candidate_blob(
+                    root,
+                    candidate_revision,
+                    "schemas/validation-evidence.schema.json",
+                )
+                if not isinstance(authority_manifest, dict):
+                    raise ValueError("candidate authority manifest is invalid")
                 acceptance_contract = request["acceptance_contract"]
                 if acceptance_contract["contract_digest"] != request["bounded_context"]["contract_digest"]:
                     raise ValueError("acceptance contract digest is not evidence-bound")
@@ -261,10 +379,8 @@ def main(argv: list[str] | None = None) -> int:
                 preflight_result = evaluate(probe(root), ProjectPolicy(), "broad")
                 if preflight_result.exit_code != 0:
                     raise OSError("broad preflight rejected evidence production")
-                writer = EvidenceWriter(output, trusted_context)
-                leaves: list[Attachment] = []
-                authority_manifest = _read_json(root / "contracts" / "agent-authority.json")
                 contracted_roots = tuple(acceptance_contract["allowed_paths"])
+                snapshots: list[tuple[bytes, str, str]] = []
                 for descriptor in request["attachments"]:
                     allowed_roots = tuple(Path(value) for value in descriptor["allowed_roots"])
                     source_path = Path(descriptor["source"]).resolve(strict=True)
@@ -280,21 +396,23 @@ def main(argv: list[str] | None = None) -> int:
                         allowed_relative = allowed_root.resolve(strict=True).relative_to(root.resolve()).as_posix()
                         if not any(contains(contracted, allowed_relative) for contracted in contracted_roots):
                             raise ValueError("attachment root is outside contracted authority")
-                    leaves.append(
-                        writer.snapshot(
-                            Path(descriptor["source"]),
-                            descriptor["path"],
-                            descriptor["media_type"],
-                            allowed_roots,
-                        )
-                    )
+                    attachment_bytes = read_approved_attachment(Path(descriptor["source"]), allowed_roots)
+                    if attachment_bytes != _candidate_blob(root, candidate_revision, source_relative):
+                        raise ValueError("attachment bytes are not bound to the candidate revision")
+                    snapshots.append((attachment_bytes, descriptor["path"], descriptor["media_type"]))
+                _require_candidate_checkout(root, candidate_revision)
+                writer = EvidenceWriter(output, trusted_context)
+                leaves: list[Attachment] = [
+                    writer.snapshot_bytes(data, archive_path, media_type)
+                    for data, archive_path, media_type in snapshots
+                ]
                 complete = writer.finalize(
                     verdict=request["verdict"],
                     validations=request["validations"],
                     attachments=leaves,
-                    schema_path=root / "schemas" / "validation-evidence.schema.json",
+                    schema_path=evidence_schema,
                 )
-                verified = verify_evidence(complete, root / "schemas" / "validation-evidence.schema.json")
+                verified = verify_evidence(complete, evidence_schema)
                 if verified.errors or verified.manifest is None:
                     raise OSError("published evidence failed verification")
                 production_payload: dict[str, Any] = {
@@ -339,6 +457,16 @@ def main(argv: list[str] | None = None) -> int:
                     file=sys.stderr,
                 )
                 exit_code = EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+            finally:
+                if writer is not None:
+                    try:
+                        writer.abort()
+                    except OSError:
+                        print(
+                            "EVID-004 infrastructure-invalid: staging cleanup failed; "
+                            "reproduction_argv=['mojoattention','evidence','produce',...]",
+                            file=sys.stderr,
+                        )
             if not _write_payload(canonical_bytes(production_payload, newline=True).decode(), args.json_path):
                 return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
             return exit_code

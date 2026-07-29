@@ -19,6 +19,8 @@ DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 RUN_ID = re.compile(r"^[0-9a-f]{32}$")
 EXIT_CODES = {"pass": 0, "product-fail": 1, "infrastructure-invalid": 2, "contract-invalid": 3}
 Verdict = Literal["pass", "product-fail", "infrastructure-invalid", "contract-invalid"]
+SchemaSource = Path | bytes
+_TEST_RUN_ID_TOKEN = object()
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,30 @@ class Attachment:
 class Verification:
     manifest: dict[str, Any] | None
     errors: tuple[EvidenceError, ...]
+
+
+def _stable_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+def _object_identity(value: os.stat_result) -> tuple[int, int, int]:
+    return (value.st_dev, value.st_ino, value.st_mode)
+
+
+def _load_schema(source: SchemaSource) -> dict[str, Any]:
+    raw = source if isinstance(source, bytes) else source.read_bytes()
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("evidence schema must be an object")
+    return value
 
 
 def canonical_bytes(value: object, *, newline: bool = False) -> bytes:
@@ -71,6 +97,48 @@ def _fsync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _open_or_create_directory(path: Path) -> int:
+    if not path.is_absolute():
+        raise ValueError("directory path must be absolute")
+    current = os.open(path.anchor, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        for component in path.parts[1:]:
+            try:
+                child = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=current,
+                )
+            except FileNotFoundError:
+                os.mkdir(component, mode=0o700, dir_fd=current)
+                os.fsync(current)
+                child = os.open(
+                    component,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=current,
+                )
+            os.close(current)
+            current = child
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _clear_directory(descriptor: int) -> None:
+    for name in os.listdir(descriptor):
+        value = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if stat.S_ISDIR(value.st_mode):
+            child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            try:
+                _clear_directory(child)
+            finally:
+                os.close(child)
+            os.rmdir(name, dir_fd=descriptor)
+        else:
+            os.unlink(name, dir_fd=descriptor)
+
+
 def _rename_noreplace(source: Path, target: Path) -> None:
     libc = ctypes.CDLL(None, use_errno=True)
     try:
@@ -83,6 +151,19 @@ def _rename_noreplace(source: Path, target: Path) -> None:
     if result != 0:
         error_number = ctypes.get_errno()
         raise OSError(error_number, os.strerror(error_number), str(target))
+
+
+def _rename_noreplace_at(root_fd: int, source: str, target: str) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError as error:
+        raise OSError("atomic no-replace publication is unsupported") from error
+    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.restype = ctypes.c_int
+    if renameat2(root_fd, os.fsencode(source), root_fd, os.fsencode(target), 1) != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(error_number, os.strerror(error_number), target)
 
 
 def _read_regular(path: Path) -> bytes:
@@ -118,6 +199,7 @@ def _read_relative_regular(root_fd: int, relative: str, *, max_bytes: int = 256 
                 dir_fd=current_fd,
             )
             descriptors.append(current_fd)
+        parent_before = [_stable_identity(os.fstat(descriptor)) for descriptor in descriptors]
         leaf_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=current_fd)
         descriptors.append(leaf_fd)
         before = os.fstat(leaf_fd)
@@ -142,6 +224,8 @@ def _read_relative_regular(root_fd: int, relative: str, *, max_bytes: int = 256 
         )
         if any(getattr(before, name) != getattr(after, name) for name in identity):
             raise ValueError("evidence leaf changed while being read")
+        if parent_before != [_stable_identity(os.fstat(descriptor)) for descriptor in descriptors[:-1]]:
+            raise ValueError("evidence parent changed while being read")
         return b"".join(chunks)
     finally:
         for descriptor in reversed(descriptors):
@@ -187,6 +271,7 @@ def _read_approved_source(source: Path, allowed_roots: tuple[Path, ...]) -> byte
                     dir_fd=current_fd,
                 )
                 descriptors.append(current_fd)
+            parent_before = [_stable_identity(os.fstat(descriptor)) for descriptor in descriptors]
             leaf_fd = os.open(relative.parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=current_fd)
             descriptors.append(leaf_fd)
             before = os.fstat(leaf_fd)
@@ -211,11 +296,21 @@ def _read_approved_source(source: Path, allowed_roots: tuple[Path, ...]) -> byte
             )
             if any(getattr(before, name) != getattr(after, name) for name in identity):
                 raise ValueError("attachment changed while being read")
+            if parent_before != [_stable_identity(os.fstat(descriptor)) for descriptor in descriptors[:-1]]:
+                raise ValueError("attachment parent changed while being read")
             return b"".join(chunks)
         finally:
             for descriptor in reversed(descriptors):
                 os.close(descriptor)
     raise ValueError("attachment source is outside approved roots")
+
+
+def read_approved_attachment(source: Path, allowed_roots: tuple[Path, ...]) -> bytes:
+    """Snapshot an approved attachment before publication state is created."""
+    try:
+        return _read_approved_source(source, allowed_roots)
+    except OSError as error:
+        raise ValueError("attachment source cannot be opened safely") from error
 
 
 def render_markdown(manifest: dict[str, Any], non_report: list[dict[str, object]]) -> str:
@@ -260,21 +355,80 @@ class EvidenceWriter:
         runs_root: Path,
         context: TrustedEvaluationContext,
         *,
-        run_id: str | None = None,
+        _run_id: str | None = None,
+        _test_token: object | None = None,
     ) -> None:
-        self.runs_root = runs_root.resolve()
-        self.run_id = run_id or secrets.token_hex(16)
+        lexical_root = runs_root.absolute()
+        if any(component.is_symlink() for component in (lexical_root, *lexical_root.parents)):
+            raise ValueError("runs root cannot contain symlinks")
+        self.runs_root = lexical_root
+        if _run_id is not None and _test_token is not _TEST_RUN_ID_TOKEN:
+            raise ValueError("caller-selected run ids are forbidden")
+        self.run_id = _run_id if _run_id is not None else secrets.token_hex(16)
         if not RUN_ID.fullmatch(self.run_id):
             raise ValueError("run id is invalid")
-        self.context = context.evidence_context()
+        self._context_bytes = canonical_bytes(context.evidence_context())
         self.staging = self.runs_root / f"{self.run_id}.staging"
         self.complete = self.runs_root / f"{self.run_id}.complete"
-        self.runs_root.mkdir(parents=True, exist_ok=True)
-        self.staging.mkdir(exist_ok=False)
+        self._runs_fd = _open_or_create_directory(self.runs_root)
+        if _object_identity(self.runs_root.stat(follow_symlinks=False)) != _object_identity(os.fstat(self._runs_fd)):
+            self._close_descriptors()
+            raise OSError("runs root identity changed")
+        try:
+            os.mkdir(self.staging.name, mode=0o700, dir_fd=self._runs_fd)
+            self._staging_fd = os.open(
+                self.staging.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=self._runs_fd,
+            )
+        except BaseException:
+            os.close(self._runs_fd)
+            self._runs_fd = -1
+            raise
         self._sealed = False
         staging = {"schema_version": "1.0.0", "run_id": self.run_id, "lifecycle": "staging"}
-        self._write("staging.json", canonical_bytes(staging, newline=True))
-        _fsync_directory(self.staging)
+        try:
+            self._write("staging.json", canonical_bytes(staging, newline=True))
+            os.fsync(self._staging_fd)
+        except BaseException:
+            self.abort()
+            raise
+
+    @classmethod
+    def _for_test(cls, runs_root: Path, context: TrustedEvaluationContext, run_id: str) -> EvidenceWriter:
+        return cls(runs_root, context, _run_id=run_id, _test_token=_TEST_RUN_ID_TOKEN)
+
+    @property
+    def context(self) -> dict[str, Any]:
+        """Return a detached diagnostic copy; writer authority remains immutable."""
+        value = json.loads(self._context_bytes)
+        if not isinstance(value, dict):
+            raise RuntimeError("trusted context is invalid")
+        return value
+
+    def abort(self) -> None:
+        """Remove only this writer's unpublished staging directory."""
+        if self._runs_fd < 0:
+            return
+        self._assert_staging_identity()
+        _clear_directory(self._staging_fd)
+        os.close(self._staging_fd)
+        self._staging_fd = -1
+        os.rmdir(self.staging.name, dir_fd=self._runs_fd)
+        os.fsync(self._runs_fd)
+        self._sealed = True
+        self._close_descriptors()
+
+    def _close_descriptors(self) -> None:
+        for name in ("_staging_fd", "_runs_fd"):
+            descriptor = getattr(self, name, -1)
+            if descriptor >= 0:
+                os.close(descriptor)
+                setattr(self, name, -1)
+
+    def _assert_staging_identity(self) -> None:
+        if _stable_identity(self.staging.stat(follow_symlinks=False)) != _stable_identity(os.fstat(self._staging_fd)):
+            raise OSError("staging directory identity changed")
 
     def _write(self, relative: str, data: bytes) -> Path:
         if not _safe_relative(relative):
@@ -282,7 +436,8 @@ class EvidenceWriter:
         parts = PurePosixPath(relative).parts
         directories: list[int] = []
         try:
-            current_fd = os.open(self.staging, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            self._assert_staging_identity()
+            current_fd = os.dup(self._staging_fd)
             directories.append(current_fd)
             for component in parts[:-1]:
                 try:
@@ -319,10 +474,12 @@ class EvidenceWriter:
     def snapshot(self, source: Path, archive_path: str, media_type: str, allowed_roots: tuple[Path, ...]) -> Attachment:
         if self._sealed:
             raise RuntimeError("writer is sealed")
-        try:
-            data = _read_approved_source(source, allowed_roots)
-        except OSError as error:
-            raise ValueError("attachment source cannot be opened safely") from error
+        data = read_approved_attachment(source, allowed_roots)
+        return self.snapshot_bytes(data, archive_path, media_type)
+
+    def snapshot_bytes(self, data: bytes, archive_path: str, media_type: str) -> Attachment:
+        if self._sealed:
+            raise RuntimeError("writer is sealed")
         self._write(archive_path, data)
         return Attachment(archive_path, digest_bytes(data), len(data), media_type)
 
@@ -332,7 +489,7 @@ class EvidenceWriter:
         verdict: Verdict,
         validations: list[dict[str, Any]],
         attachments: list[Attachment],
-        schema_path: Path,
+        schema_path: SchemaSource,
     ) -> Path:
         if self._sealed:
             raise RuntimeError("writer is sealed")
@@ -359,7 +516,7 @@ class EvidenceWriter:
             raise ValueError("non-pass verdict requires a failed validation")
         if any(item.get("status") == "fail" and not item.get("errors") for item in validations):
             raise ValueError("failed validations require typed errors")
-        manifest = dict(self.context)
+        manifest = self.context
         manifest.update(
             {
                 "schema_version": "1.0.0",
@@ -377,22 +534,25 @@ class EvidenceWriter:
         manifest["attachments"] = leaves
         manifest["attachment_closure_digest"] = digest_bytes(canonical_bytes(leaves))
         manifest["evidence_digest"] = digest_bytes(canonical_bytes(manifest))
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema = _load_schema(schema_path)
         errors = tuple(Draft202012Validator(schema).iter_errors(manifest))
         if errors:
             raise ValueError(f"evidence is schema-invalid: {errors[0].message}")
-        (self.staging / "staging.json").unlink()
+        os.unlink("staging.json", dir_fd=self._staging_fd)
         self._write("evidence.json", canonical_bytes(manifest, newline=True))
-        _fsync_directory(self.staging)
+        os.fsync(self._staging_fd)
+        self._assert_staging_identity()
         staged = verify_evidence(self.staging, schema_path, expected_suffix=".staging")
         if staged.errors:
             raise ValueError(f"staged closure verification failed: {staged.errors[0].code}")
-        _rename_noreplace(self.staging, self.complete)
-        _fsync_directory(self.runs_root)
+        self._assert_staging_identity()
+        _rename_noreplace_at(self._runs_fd, self.staging.name, self.complete.name)
+        os.fsync(self._runs_fd)
+        self._close_descriptors()
         return self.complete
 
 
-def verify_evidence(path: Path, schema_path: Path, *, expected_suffix: str = ".complete") -> Verification:
+def verify_evidence(path: Path, schema_path: SchemaSource, *, expected_suffix: str = ".complete") -> Verification:
     errors: list[EvidenceError] = []
     match = re.fullmatch(rf"([0-9a-f]{{32}}){re.escape(expected_suffix)}", path.name)
     if match is None or path.is_symlink() or not path.is_dir():
@@ -411,17 +571,24 @@ def verify_evidence(path: Path, schema_path: Path, *, expected_suffix: str = ".c
             raise ValueError("root JSON must be an object")
         if raw != canonical_bytes(manifest, newline=True):
             raise ValueError("root JSON is noncanonical")
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        schema = _load_schema(schema_path)
         schema_errors = tuple(Draft202012Validator(schema).iter_errors(manifest))
         if schema_errors:
             raise ValueError(schema_errors[0].message)
         if manifest["run_id"] != match.group(1) or manifest["lifecycle"] != "complete":
             raise ValueError("directory identity or lifecycle mismatch")
+        if (
+            manifest["source_revision"] != manifest["candidate_revision"]
+            or manifest["source_tree"] != manifest["candidate_tree"]
+        ):
+            raise ValueError("source and candidate identities are mixed")
         expected_root = dict(manifest)
         root_digest = expected_root.pop("evidence_digest")
         if root_digest != digest_bytes(canonical_bytes(expected_root)):
             raise ValueError("root digest mismatch")
         leaves = manifest["attachments"]
+        if [item["path"] for item in leaves] != sorted(item["path"] for item in leaves):
+            raise ValueError("attachment closure is not canonically ordered")
         if sum(int(item["size_bytes"]) for item in leaves) > 1024 * 1024 * 1024:
             raise ValueError("attachment closure exceeds cumulative size limit")
         if manifest["attachment_closure_digest"] != digest_bytes(canonical_bytes(leaves)):

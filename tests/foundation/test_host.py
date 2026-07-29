@@ -3,12 +3,23 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from mojoattention.validation.host import _cpu_flags, _memory, _run_state, _tree_size
+from mojoattention.validation.host import (
+    _RUN_VERIFICATION_CACHE,
+    _cpu_flags,
+    _memory,
+    _run_state,
+    _tree_size,
+    _verify_complete_cached,
+)
 from mojoattention.validation.preflight import RunState
 
 
 class HostAdapterTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        _RUN_VERIFICATION_CACHE.clear()
+
     def test_cpu_flags_are_intersected_across_all_processors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cpuinfo = Path(directory) / "cpuinfo"
@@ -49,6 +60,89 @@ class HostAdapterTests(unittest.TestCase):
             cache.parent.mkdir()
             cache.symlink_to(external, target_is_directory=True)
             self.assertEqual(2**63 - 1, _tree_size(cache, root))
+
+    def test_complete_run_verification_cache_is_invalidated_by_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / ("a" * 32 + ".complete")
+            run.mkdir()
+            leaf = run / "evidence.json"
+            leaf.write_text("first", encoding="utf-8")
+            schema = root / "schema.json"
+            schema.write_text("{}", encoding="utf-8")
+            with patch("mojoattention.validation.host.verify_evidence") as verify:
+                verify.return_value.errors = ()
+                self.assertTrue(_verify_complete_cached(run, schema))
+                self.assertTrue(_verify_complete_cached(run, schema))
+                self.assertEqual(1, verify.call_count)
+                leaf.write_text("changed-size", encoding="utf-8")
+                self.assertTrue(_verify_complete_cached(run, schema))
+                self.assertEqual(2, verify.call_count)
+
+    def test_complete_run_verification_cache_rejects_mutation_during_verification(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / ("a" * 32 + ".complete")
+            run.mkdir()
+            leaf = run / "evidence.json"
+            leaf.write_text("first", encoding="utf-8")
+            schema = root / "schema.json"
+            schema.write_text("{}", encoding="utf-8")
+
+            def mutate(*_args: object, **_kwargs: object) -> object:
+                leaf.write_text("changed-size", encoding="utf-8")
+                result = unittest.mock.Mock()
+                result.errors = ()
+                return result
+
+            with patch("mojoattention.validation.host.verify_evidence", side_effect=mutate) as verify:
+                self.assertFalse(_verify_complete_cached(run, schema))
+                self.assertEqual(1, verify.call_count)
+                self.assertFalse(_RUN_VERIFICATION_CACHE)
+
+    def test_complete_run_verification_cache_rejects_mutation_during_cache_hit(self) -> None:
+        signature_a = (("evidence.json", 1, 2, 3, 4),)
+        signature_b = (("evidence.json", 1, 2, 5, 6),)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / ("a" * 32 + ".complete")
+            run.mkdir()
+            schema = root / "schema.json"
+            schema.write_text("{}", encoding="utf-8")
+            with (
+                patch("mojoattention.validation.host._run_signature", side_effect=(signature_a, signature_a)),
+                patch("mojoattention.validation.host.verify_evidence") as verify,
+            ):
+                verify.return_value.errors = ()
+                self.assertTrue(_verify_complete_cached(run, schema))
+            with (
+                patch("mojoattention.validation.host._run_signature", side_effect=(signature_a, signature_b)),
+                patch("mojoattention.validation.host.verify_evidence") as verify,
+            ):
+                self.assertFalse(_verify_complete_cached(run, schema))
+                verify.assert_not_called()
+
+    def test_complete_run_verification_cache_binds_schema_bytes_and_rejects_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / ("a" * 32 + ".complete")
+            run.mkdir()
+            (run / "evidence.json").write_text("first", encoding="utf-8")
+            schema = root / "schema.json"
+            schema.write_text("{}", encoding="utf-8")
+            with patch("mojoattention.validation.host.verify_evidence") as verify:
+                verify.return_value.errors = ()
+                self.assertTrue(_verify_complete_cached(run, schema))
+                schema.write_text('{"type":"object"}', encoding="utf-8")
+                self.assertTrue(_verify_complete_cached(run, schema))
+                self.assertEqual(2, verify.call_count)
+
+            target = root / "target.json"
+            target.write_text("{}", encoding="utf-8")
+            schema.unlink()
+            schema.symlink_to(target)
+            with self.assertRaises(OSError):
+                _verify_complete_cached(run, schema)
 
 
 if __name__ == "__main__":

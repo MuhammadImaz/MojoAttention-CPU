@@ -6,6 +6,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,7 +14,7 @@ from unittest.mock import patch
 
 from jsonschema import Draft202012Validator  # type: ignore[import-untyped]
 
-from mojoattention.cli.main import build_parser, main
+from mojoattention.cli.main import _read_protected_caller_bytes, _require_candidate_checkout, build_parser, main
 from mojoattention.validation.evidence import (
     EXIT_CODES,
     EvidenceWriter,
@@ -105,7 +106,7 @@ class EvidenceContractTests(unittest.TestCase):
         source_root.mkdir()
         source = source_root / "result.txt"
         source.write_text("stable evidence\n", encoding="utf-8")
-        writer = EvidenceWriter(root / "runs", context(), run_id=run_id)
+        writer = EvidenceWriter._for_test(root / "runs", context(), run_id)
         leaf = writer.snapshot(source, "artifacts/result.txt", "text/plain", (source_root,))
         return writer.finalize(
             verdict=verdict,  # type: ignore[arg-type]
@@ -213,12 +214,12 @@ class EvidenceContractTests(unittest.TestCase):
             source.write_text("x", encoding="utf-8")
             for index, archive in enumerate(("/absolute", "../escape", "a/../b", "a\\b", "", "a//b", "a/")):
                 with self.subTest(path=archive):
-                    writer = EvidenceWriter(root / f"runs-{index}", context(), run_id=f"{index + 1:032x}")
+                    writer = EvidenceWriter._for_test(root / f"runs-{index}", context(), f"{index + 1:032x}")
                     with self.assertRaises(ValueError):
                         writer.snapshot(source, archive, "text/plain", (allowed,))
             outside = root / "outside.txt"
             outside.write_text("secret", encoding="utf-8")
-            writer = EvidenceWriter(root / "runs-outside", context(), run_id="e" * 32)
+            writer = EvidenceWriter._for_test(root / "runs-outside", context(), "e" * 32)
             with self.assertRaises(ValueError):
                 writer.snapshot(outside, "artifacts/outside.txt", "text/plain", (allowed,))
 
@@ -231,21 +232,21 @@ class EvidenceContractTests(unittest.TestCase):
             source.write_text("x", encoding="utf-8")
             alias = allowed / "alias.txt"
             alias.symlink_to(source)
-            writer = EvidenceWriter(root / "runs-symlink", context(), run_id="d" * 32)
+            writer = EvidenceWriter._for_test(root / "runs-symlink", context(), "d" * 32)
             with self.assertRaises(ValueError):
                 writer.snapshot(alias, "artifacts/alias.txt", "text/plain", (allowed,))
             hardlink = allowed / "hardlink.txt"
             os.link(source, hardlink)
-            writer = EvidenceWriter(root / "runs-hardlink", context(), run_id="c" * 32)
+            writer = EvidenceWriter._for_test(root / "runs-hardlink", context(), "c" * 32)
             with self.assertRaises(ValueError):
                 writer.snapshot(source, "artifacts/source.txt", "text/plain", (allowed,))
 
     def test_duplicate_identity_inventory_and_verdict_mismatch_are_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
-            first = EvidenceWriter(root / "runs", context(), run_id="b" * 32)
+            first = EvidenceWriter._for_test(root / "runs", context(), "b" * 32)
             with self.assertRaises(FileExistsError):
-                EvidenceWriter(root / "runs", context(), run_id="b" * 32)
+                EvidenceWriter._for_test(root / "runs", context(), "b" * 32)
             source_root = root / "approved"
             source_root.mkdir()
             source = source_root / "result.txt"
@@ -269,7 +270,7 @@ class EvidenceContractTests(unittest.TestCase):
             source_root.mkdir()
             source = source_root / "result.txt"
             source.write_text("x", encoding="utf-8")
-            writer = EvidenceWriter(root / "runs", context(), run_id="a" * 32)
+            writer = EvidenceWriter._for_test(root / "runs", context(), "a" * 32)
             leaf = writer.snapshot(source, "artifacts/result.txt", "text/plain", (source_root,))
             complete = writer.finalize(
                 verdict="pass", validations=[validation()], attachments=[leaf], schema_path=SCHEMA
@@ -326,10 +327,10 @@ class EvidenceContractTests(unittest.TestCase):
                     result["attachments"] = ["artifacts/missing.txt"]
                 else:
                     result["errors"] = []
-                writer = EvidenceWriter(
+                writer = EvidenceWriter._for_test(
                     root / "runs",
                     trusted_context,
-                    run_id=f"{index + 20:032x}",
+                    f"{index + 20:032x}",
                 )
                 leaf = writer.snapshot(source, "artifacts/result.txt", "text/plain", (source_root,))
                 with self.assertRaises(ValueError):
@@ -426,7 +427,185 @@ class EvidenceContractTests(unittest.TestCase):
                     return_value=SimpleNamespace(exit_code=0),
                 ),
                 patch("mojoattention.cli.main.probe"),
+                patch("mojoattention.cli.main._require_candidate_checkout"),
+                patch(
+                    "mojoattention.cli.main._candidate_blob",
+                    side_effect=lambda _root, _revision, path: (
+                        (ROOT / "contracts" / "agent-authority.json").read_bytes()
+                        if path == "contracts/agent-authority.json"
+                        else SCHEMA.read_bytes()
+                        if path == "schemas/validation-evidence.schema.json"
+                        else source.read_bytes()
+                    ),
+                ),
             ):
                 self.assertEqual(0, main(argv))
             complete = next((project / "reports" / "runs").glob("*.complete"))
             self.assertEqual((), verify_evidence(complete, schema_dir / SCHEMA.name).errors)
+
+            with (
+                patch.dict(os.environ, {"MOJOATTENTION_PROJECT_ROOT": str(project)}),
+                patch("mojoattention.cli.main.validate_contract", return_value=()),
+                patch(
+                    "mojoattention.cli.main.evaluate_and_compose_trusted_context",
+                    return_value=(context(), ()),
+                ),
+                patch("mojoattention.cli.main.evaluate", return_value=SimpleNamespace(exit_code=0)),
+                patch("mojoattention.cli.main.probe"),
+                patch("mojoattention.cli.main._require_candidate_checkout"),
+                patch(
+                    "mojoattention.cli.main._candidate_blob",
+                    side_effect=lambda _root, _revision, path: (
+                        (ROOT / "contracts" / "agent-authority.json").read_bytes()
+                        if path == "contracts/agent-authority.json"
+                        else SCHEMA.read_bytes()
+                        if path == "schemas/validation-evidence.schema.json"
+                        else b"not candidate bytes"
+                    ),
+                ),
+            ):
+                self.assertEqual(EXIT_CODES["contract-invalid"], main(argv))
+
+    def test_writer_context_is_detached_and_run_id_is_not_caller_selectable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with self.assertRaises(ValueError):
+                EvidenceWriter(root / "forbidden", context(), _run_id="a" * 32)
+            writer = EvidenceWriter._for_test(root / "runs", context(), "1" * 32)
+            detached = writer.context
+            detached["candidate_revision"] = "0" * 40
+            source_root = root / "approved"
+            source_root.mkdir()
+            source = source_root / "result.txt"
+            source.write_text("stable evidence\n", encoding="utf-8")
+            leaf = writer.snapshot(source, "artifacts/result.txt", "text/plain", (source_root,))
+            complete = writer.finalize(
+                verdict="pass",
+                validations=[validation()],
+                attachments=[leaf],
+                schema_path=SCHEMA,
+            )
+            manifest = json.loads((complete / "evidence.json").read_bytes())
+            self.assertNotEqual("0" * 40, manifest["candidate_revision"])
+
+    def test_duplicate_creators_are_exclusive_and_failed_writer_can_abort(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+
+            def create() -> EvidenceWriter | None:
+                try:
+                    return EvidenceWriter._for_test(root / "runs", context(), "2" * 32)
+                except FileExistsError:
+                    return None
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                writers = list(pool.map(lambda _: create(), range(2)))
+            winners = [writer for writer in writers if writer is not None]
+            self.assertEqual(1, len(winners))
+            winners[0].abort()
+            self.assertFalse(any((root / "runs").iterdir()))
+
+    def test_publication_failure_cleanup_removes_only_owned_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "approved"
+            source_root.mkdir()
+            source = source_root / "result.txt"
+            source.write_text("stable evidence\n", encoding="utf-8")
+            writer = EvidenceWriter._for_test(root / "runs", context(), "3" * 32)
+            leaf = writer.snapshot(source, "artifacts/result.txt", "text/plain", (source_root,))
+            with (
+                patch("mojoattention.validation.evidence._rename_noreplace_at", side_effect=OSError("EXDEV")),
+                self.assertRaises(OSError),
+            ):
+                writer.finalize(
+                    verdict="pass",
+                    validations=[validation()],
+                    attachments=[leaf],
+                    schema_path=SCHEMA,
+                )
+            writer.abort()
+            self.assertFalse((root / "runs" / ("3" * 32 + ".staging")).exists())
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            with (
+                patch.object(EvidenceWriter, "_write", side_effect=OSError("fsync/write failure")),
+                self.assertRaises(OSError),
+            ):
+                EvidenceWriter._for_test(root / "runs", context(), "4" * 32)
+            self.assertFalse(any((root / "runs").iterdir()))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source_root = root / "approved"
+            source_root.mkdir()
+            source = source_root / "result.txt"
+            source.write_text("stable evidence\n", encoding="utf-8")
+            writer = EvidenceWriter._for_test(root / "runs", context(), "5" * 32)
+            leaf = writer.snapshot(source, "artifacts/result.txt", "text/plain", (source_root,))
+            writer.complete.mkdir()
+            with self.assertRaises(OSError):
+                writer.finalize(
+                    verdict="pass",
+                    validations=[validation()],
+                    attachments=[leaf],
+                    schema_path=SCHEMA,
+                )
+            writer.abort()
+            self.assertTrue(writer.complete.is_dir())
+            self.assertFalse(writer.staging.exists())
+
+    def test_consumer_rejects_reordered_mixed_identity_and_hardlinked_closures(self) -> None:
+        for index, mutation in enumerate(("reordered", "mixed", "hardlink")):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                complete = self.produce(root, run_id=f"{index + 30:032x}")
+                manifest_path = complete / "evidence.json"
+                manifest = json.loads(manifest_path.read_bytes())
+                if mutation == "reordered":
+                    manifest["attachments"] = list(reversed(manifest["attachments"]))
+                    manifest["attachment_closure_digest"] = digest_bytes(canonical_bytes(manifest["attachments"]))
+                    unsigned = dict(manifest)
+                    unsigned.pop("evidence_digest")
+                    manifest["evidence_digest"] = digest_bytes(canonical_bytes(unsigned))
+                    manifest_path.write_bytes(canonical_bytes(manifest, newline=True))
+                elif mutation == "mixed":
+                    manifest["source_revision"] = "0" * 40
+                    unsigned = dict(manifest)
+                    unsigned.pop("evidence_digest")
+                    manifest["evidence_digest"] = digest_bytes(canonical_bytes(unsigned))
+                    manifest_path.write_bytes(canonical_bytes(manifest, newline=True))
+                else:
+                    os.link(complete / "artifacts" / "result.txt", root / "external-hardlink")
+                self.assertTrue(verify_evidence(complete, SCHEMA).errors)
+
+    def test_trusted_inputs_reject_symlinked_components_and_candidate_checkout_is_exact(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            area = Path(temporary)
+            project = area / "project"
+            project.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=project, check=True)
+            subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=project, check=True)
+            subprocess.run(["git", "config", "user.name", "Test"], cwd=project, check=True)
+            tracked = project / "tracked.txt"
+            tracked.write_text("clean\n", encoding="utf-8")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=project, check=True)
+            subprocess.run(["git", "commit", "-qm", "seed"], cwd=project, check=True)
+            revision = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=project, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            _require_candidate_checkout(project, revision)
+            tracked.write_text("dirty\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                _require_candidate_checkout(project, revision)
+
+            trusted = area / "trusted"
+            trusted.mkdir()
+            payload = trusted / "request.json"
+            payload.write_text("{}", encoding="utf-8")
+            alias = area / "alias"
+            alias.symlink_to(trusted, target_is_directory=True)
+            self.assertEqual(b"{}", _read_protected_caller_bytes(project, str(payload)))
+            with self.assertRaises(OSError):
+                _read_protected_caller_bytes(project, str(alias / "request.json"))
