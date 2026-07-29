@@ -120,6 +120,12 @@ class AcceptanceContractTests(unittest.TestCase):
         example = json.loads((ROOT / "contracts" / "acceptance" / "1-3.example.json").read_text(encoding="utf-8"))
         self.assertEqual((), validate_contract(example, ROOT, self.context()))
 
+        version_two = unsigned_contract()
+        version_two["schema_version"] = "2.0.0"
+        version_two["suite_manifest_digest"] = "sha256:" + ("a" * 64)
+        version_two = issue_contract(version_two)
+        self.assertEqual((), validate_contract(version_two, ROOT, self.context()))
+
     def test_unknown_missing_and_malformed_fields_fail_stably(self) -> None:
         for mutation in ("unknown", "missing", "version", "revision", "digest"):
             contract = valid_contract()
