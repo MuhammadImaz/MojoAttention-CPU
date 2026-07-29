@@ -31,6 +31,7 @@ from mojoattention.validation.fast import (
     evidence_validations,
     execute_checks,
     load_manifest,
+    verify_fast_evidence,
 )
 from mojoattention.validation.host import probe
 from mojoattention.validation.identity import detect_identity, evaluate_identity
@@ -275,6 +276,7 @@ def run_fast_validation(
             "os": sys.platform.replace("_", "-"),
             "architecture": os.uname().machine.replace("_", "-"),
             "python_version": ".".join(str(item) for item in sys.version_info[:3]),
+            "reference_host": "unverified",
         },
     }
     trusted_policy = TrustedPolicyInput(
@@ -329,6 +331,7 @@ def run_fast_validation(
         validations = evidence_validations(
             result,
             {item.validation_id: item.reproduction_argv for item in manifest.checks},
+            reference_target_ns=manifest.reference_target_ns,
         )
         complete = writer.finalize(
             verdict=result.verdict,
@@ -339,6 +342,8 @@ def run_fast_validation(
         verified = verify_evidence(complete, evidence_schema)
         if verified.errors or verified.manifest is None:
             raise OSError("published Fast evidence failed independent verification")
+        if closure_errors := verify_fast_evidence(manifest, result, verified.manifest):
+            raise OSError(closure_errors[0].message)
         _require_candidate_checkout(root, candidate_revision)
         return result.verdict, complete, result.errors
     finally:

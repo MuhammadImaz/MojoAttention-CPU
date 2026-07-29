@@ -196,7 +196,8 @@
       "properties": {
         "os": {"$ref": "#/$defs/id"},
         "architecture": {"$ref": "#/$defs/id"},
-        "python_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"}
+        "python_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "reference_host": {"enum": ["unverified", "documented-reference"]}
       }
     },
     "metric": {

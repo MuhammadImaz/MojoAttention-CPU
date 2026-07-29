@@ -131,6 +131,8 @@ CheckAdapter = Callable[[FastCheck], AdapterResult]
 def evidence_validations(
     result: FastRunResult,
     reproduction_argv: Mapping[str, tuple[str, ...]],
+    *,
+    reference_target_ns: int | None = None,
 ) -> list[dict[str, Any]]:
     """Translate structured runner observations into the shared evidence interface."""
 
@@ -155,17 +157,48 @@ def evidence_validations(
                 "reproduction_argv": list(reproduction_argv[observation.validation_id]),
                 "metrics": [
                     {
-                        "name": "elapsed",
+                        "name": "run-elapsed",
                         "value": result.elapsed_ns,
                         "value_type": "integer",
                         "unit": "nanoseconds",
                     },
                     {
-                        "name": "completed",
-                        "value": observation.completed,
+                        "name": "seed",
+                        "value": observation.seed,
                         "value_type": "integer",
-                        "unit": "count",
+                        "unit": "seed",
                     },
+                    *(
+                        [
+                            {
+                                "name": "reference-target",
+                                "value": reference_target_ns,
+                                "value_type": "integer",
+                                "unit": "nanoseconds",
+                            }
+                        ]
+                        if reference_target_ns is not None
+                        else []
+                    ),
+                    *[
+                        {
+                            "name": name,
+                            "value": value,
+                            "value_type": "integer",
+                            "unit": unit,
+                        }
+                        for name, value, unit in (
+                            ("selected", observation.selected, "count"),
+                            ("collected", observation.collected, "count"),
+                            ("completed", observation.completed, "count"),
+                            ("skipped", observation.skipped, "count"),
+                            ("xfailed", observation.xfailed, "count"),
+                            ("deselected", observation.deselected, "count"),
+                            ("collection-errors", observation.collection_errors, "count"),
+                            ("shard-index", observation.shard_index, "index"),
+                            ("shard-total", observation.shard_total, "count"),
+                        )
+                    ],
                 ],
                 "errors": [
                     {"code": error.code, "message": error.message, "context": dict(error.context)} for error in related
@@ -176,6 +209,34 @@ def evidence_validations(
             }
         )
     return validations
+
+
+def verify_fast_evidence(
+    manifest: FastManifest,
+    result: FastRunResult,
+    evidence: Mapping[str, Any],
+) -> tuple[FastError, ...]:
+    """Bind an independently verified evidence root back to the authenticated run."""
+
+    verdict, inventory_errors = evaluate_observations(manifest, result.observations)
+    expected = evidence_validations(
+        result,
+        {check.validation_id: check.reproduction_argv for check in manifest.checks},
+        reference_target_ns=manifest.reference_target_ns,
+    )
+    expected.sort(key=lambda item: item["validation_id"])
+    exact = (
+        verdict == result.verdict
+        and (result.verdict != "pass" or not result.errors)
+        and evidence.get("verdict") == result.verdict
+        and evidence.get("seed") == manifest.seed
+        and evidence.get("declared_validation_ids") == [check.validation_id for check in manifest.checks]
+        and evidence.get("declared_case_ids") == [check.case_id for check in manifest.checks]
+        and evidence.get("validations") == expected
+    )
+    if inventory_errors or not exact:
+        return (_error("FAST-EVID-001", "published evidence differs from authenticated Fast completion"),)
+    return ()
 
 
 def load_manifest(manifest_bytes: bytes, schema_bytes: bytes) -> FastManifest:

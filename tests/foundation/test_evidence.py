@@ -178,6 +178,15 @@ class EvidenceContractTests(unittest.TestCase):
             missing.pop("suite_manifest_digest")
             self.assertTrue(tuple(Draft202012Validator(self.schema).iter_errors(missing)))
 
+    def test_environment_records_reference_host_classification_without_enforcing_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            complete = self.produce(Path(temporary))
+            manifest = json.loads((complete / "evidence.json").read_bytes())
+        manifest["environment"]["reference_host"] = "unverified"
+        self.assertEqual([], list(Draft202012Validator(self.schema).iter_errors(manifest)))
+        manifest["environment"]["reference_host"] = "claimed-without-authority"
+        self.assertTrue(list(Draft202012Validator(self.schema).iter_errors(manifest)))
+
     def test_create_finalize_verify_is_atomic_and_hash_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
