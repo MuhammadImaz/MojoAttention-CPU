@@ -100,6 +100,28 @@ class HostAdapterTests(unittest.TestCase):
                 self.assertEqual(1, verify.call_count)
                 self.assertFalse(_RUN_VERIFICATION_CACHE)
 
+    def test_complete_run_verification_cache_rejects_mutation_during_cache_hit(self) -> None:
+        signature_a = (("evidence.json", 1, 2, 3, 4),)
+        signature_b = (("evidence.json", 1, 2, 5, 6),)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / ("a" * 32 + ".complete")
+            run.mkdir()
+            schema = root / "schema.json"
+            schema.write_text("{}", encoding="utf-8")
+            with (
+                patch("mojoattention.validation.host._run_signature", side_effect=(signature_a, signature_a)),
+                patch("mojoattention.validation.host.verify_evidence") as verify,
+            ):
+                verify.return_value.errors = ()
+                self.assertTrue(_verify_complete_cached(run, schema))
+            with (
+                patch("mojoattention.validation.host._run_signature", side_effect=(signature_a, signature_b)),
+                patch("mojoattention.validation.host.verify_evidence") as verify,
+            ):
+                self.assertFalse(_verify_complete_cached(run, schema))
+                verify.assert_not_called()
+
     def test_complete_run_verification_cache_binds_schema_bytes_and_rejects_symlinks(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

@@ -459,8 +459,14 @@ def main(argv: list[str] | None = None) -> int:
                 exit_code = EVIDENCE_EXIT_CODES["infrastructure-invalid"]
             finally:
                 if writer is not None:
-                    with suppress(OSError):
+                    try:
                         writer.abort()
+                    except OSError:
+                        print(
+                            "EVID-004 infrastructure-invalid: staging cleanup failed; "
+                            "reproduction_argv=['mojoattention','evidence','produce',...]",
+                            file=sys.stderr,
+                        )
             if not _write_payload(canonical_bytes(production_payload, newline=True).decode(), args.json_path):
                 return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
             return exit_code

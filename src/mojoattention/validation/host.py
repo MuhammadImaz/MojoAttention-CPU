@@ -133,6 +133,8 @@ def _verify_complete_cached(entry: Path, schema_path: Path) -> bool:
     )
     cached = _RUN_VERIFICATION_CACHE.get(key)
     if cached is not None:
+        if _run_signature(entry) != before:
+            return False
         _RUN_VERIFICATION_CACHE.move_to_end(key)
         return cached
     valid = not verify_evidence(entry, schema).errors
