@@ -3,12 +3,23 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from mojoattention.validation.host import _cpu_flags, _memory, _run_state, _tree_size
+from mojoattention.validation.host import (
+    _RUN_VERIFICATION_CACHE,
+    _cpu_flags,
+    _memory,
+    _run_state,
+    _tree_size,
+    _verify_complete_cached,
+)
 from mojoattention.validation.preflight import RunState
 
 
 class HostAdapterTests(unittest.TestCase):
+    def tearDown(self) -> None:
+        _RUN_VERIFICATION_CACHE.clear()
+
     def test_cpu_flags_are_intersected_across_all_processors(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             cpuinfo = Path(directory) / "cpuinfo"
@@ -49,6 +60,24 @@ class HostAdapterTests(unittest.TestCase):
             cache.parent.mkdir()
             cache.symlink_to(external, target_is_directory=True)
             self.assertEqual(2**63 - 1, _tree_size(cache, root))
+
+    def test_complete_run_verification_cache_is_invalidated_by_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run = root / ("a" * 32 + ".complete")
+            run.mkdir()
+            leaf = run / "evidence.json"
+            leaf.write_text("first", encoding="utf-8")
+            schema = root / "schema.json"
+            schema.write_text("{}", encoding="utf-8")
+            with patch("mojoattention.validation.host.verify_evidence") as verify:
+                verify.return_value.errors = ()
+                self.assertTrue(_verify_complete_cached(run, schema))
+                self.assertTrue(_verify_complete_cached(run, schema))
+                self.assertEqual(1, verify.call_count)
+                leaf.write_text("changed-size", encoding="utf-8")
+                self.assertTrue(_verify_complete_cached(run, schema))
+                self.assertEqual(2, verify.call_count)
 
 
 if __name__ == "__main__":

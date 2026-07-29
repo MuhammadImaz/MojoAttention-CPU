@@ -5,10 +5,16 @@ import platform
 import re
 import shutil
 import subprocess
+from collections import OrderedDict
 from pathlib import Path
 
 from mojoattention.validation.evidence import verify_evidence
 from mojoattention.validation.preflight import HostSnapshot, RunState
+
+_RUN_VERIFICATION_CACHE_LIMIT = 64
+_RUN_VERIFICATION_CACHE: OrderedDict[
+    tuple[str, tuple[tuple[str, int, int, int, int], ...], tuple[int, int, int, int]], bool
+] = OrderedDict()
 
 
 def _memory(path: Path = Path("/proc/meminfo")) -> tuple[int, int]:
@@ -84,6 +90,40 @@ def _marker_state(name: str) -> RunState | None:
     return None
 
 
+def _run_signature(path: Path) -> tuple[tuple[str, int, int, int, int], ...]:
+    entries: list[tuple[str, int, int, int, int]] = []
+    for item in sorted(path.rglob("*")):
+        value = item.stat(follow_symlinks=False)
+        entries.append(
+            (
+                item.relative_to(path).as_posix(),
+                value.st_mode,
+                value.st_ino,
+                value.st_size,
+                value.st_ctime_ns,
+            )
+        )
+    return tuple(entries)
+
+
+def _verify_complete_cached(entry: Path, schema_path: Path) -> bool:
+    schema = schema_path.stat(follow_symlinks=False)
+    key = (
+        str(entry.resolve(strict=True)),
+        _run_signature(entry),
+        (schema.st_ino, schema.st_size, schema.st_mtime_ns, schema.st_ctime_ns),
+    )
+    cached = _RUN_VERIFICATION_CACHE.get(key)
+    if cached is not None:
+        _RUN_VERIFICATION_CACHE.move_to_end(key)
+        return cached
+    valid = not verify_evidence(entry, schema_path).errors
+    _RUN_VERIFICATION_CACHE[key] = valid
+    while len(_RUN_VERIFICATION_CACHE) > _RUN_VERIFICATION_CACHE_LIMIT:
+        _RUN_VERIFICATION_CACHE.popitem(last=False)
+    return valid
+
+
 def _run_state(root: Path) -> RunState:
     runs = root / "reports" / "runs"
     try:
@@ -100,8 +140,7 @@ def _run_state(root: Path) -> RunState:
             match = re.fullmatch(r"([0-9a-f]{32})\.complete", entry.name)
             if match is None:
                 return RunState.UNSEALED
-            verification = verify_evidence(entry, root / "schemas" / "validation-evidence.schema.json")
-            if verification.errors:
+            if not _verify_complete_cached(entry, root / "schemas" / "validation-evidence.schema.json"):
                 return RunState.UNSEALED
         return RunState.IDLE
     except OSError:
