@@ -1,19 +1,45 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
+import sys
 import tempfile
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from mojoattention.validation.fast import AdapterResult, FastCheck, FastError, Observation, Verdict
+from mojoattention.validation.acceptance import ContractContext, issue_contract, validate_contract
+from mojoattention.validation.evidence import EvidenceWriter, verify_evidence
+from mojoattention.validation.fast import (
+    AdapterResult,
+    FastCheck,
+    FastError,
+    Observation,
+    RunnerConfig,
+    Verdict,
+    evaluate_observations,
+    load_manifest,
+    run_bounded_argv,
+)
 from mojoattention.validation.protected_assets import (
     TrustedPolicyInput,
+    evaluate_and_compose_trusted_context,
     evaluate_protected_changes,
     inspect_repository_changes,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_EXPECTED_REASONS = {
+    "FAST-008": "FAST-CANARY-ASSERTION",
+    "FAST-009": "FAST-CANARY-WORKFLOW",
+    "FAST-010": "FAST-CANARY-REPORT",
+    "FAST-011": "FAST-CANARY-EVIDENCE",
+    "FAST-012": "FAST-CANARY-CONTRACT",
+    "FAST-013": "FAST-CANARY-PROTECTED",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,40 +283,179 @@ def _protected_pair(root: Path, trusted_policy: TrustedPolicyInput) -> tuple[Can
         )
 
 
+def _bounded_python(source: Path) -> int | None:
+    config = RunnerConfig(20, 64 * 1024, "C", ("PATH",), 0, 1)
+    return run_bounded_argv((sys.executable, str(source)), source.parent, config).returncode
+
+
+def _assertion_pair(root: Path) -> tuple[CanaryOutcome, CanaryOutcome]:
+    with tempfile.TemporaryDirectory(prefix="fast-assertion-", dir=root) as directory:
+        isolated = Path(directory)
+        mutation = isolated / "mutation.py"
+        control = isolated / "control.py"
+        mutation.write_text("value = 1\n", encoding="utf-8")
+        control.write_text("value = 1\nassert value == 2\n", encoding="utf-8")
+        removed_assertion_escaped = _bounded_python(mutation) == 0
+        assertion_executed = _bounded_python(control) not in (None, 0)
+    return (
+        _outcome("FAST-008", not removed_assertion_escaped, "product-fail", "FAST-CANARY-ASSERTION"),
+        _outcome("FAST-008", assertion_executed, "product-fail", "FAST-CANARY-ASSERTION"),
+    )
+
+
+def _workflow_pair(root: Path) -> tuple[CanaryOutcome, CanaryOutcome]:
+    with tempfile.TemporaryDirectory(prefix="fast-workflow-", dir=root) as directory:
+        isolated = Path(directory)
+        workflow = isolated / "quality.yml"
+        clean = "permissions:\n  contents: read\nsteps:\n  - run: exit 7\n"
+        mutation = clean.replace("run: exit 7", "run: exit 7 || true")
+
+        def inspect(text: str) -> CanaryOutcome:
+            workflow.write_text(text, encoding="utf-8")
+            command = next(line.split("run:", 1)[1].strip() for line in text.splitlines() if "run:" in line)
+            result = run_bounded_argv(
+                ("/bin/bash", "-c", command),
+                isolated,
+                RunnerConfig(20, 64 * 1024, "C", ("PATH",), 0, 1),
+            )
+            valid = (
+                "contents: read" in workflow.read_text(encoding="utf-8")
+                and "continue-on-error" not in text
+                and "|| true" not in command
+                and result.returncode == 7
+            )
+            return _outcome("FAST-009", valid, "contract-invalid", "FAST-CANARY-WORKFLOW")
+
+        return inspect(mutation), inspect(clean)
+
+
+def _report_pair(root: Path, trusted_policy: TrustedPolicyInput) -> tuple[CanaryOutcome, CanaryOutcome]:
+    revision = _run_git(PROJECT_ROOT, "rev-parse", "HEAD")
+    digest = "sha256:" + "a" * 64
+    bounded_context = {
+        "suite_id": "fast",
+        "contract_digest": digest,
+        "config_digest": digest,
+        "protocol_digest": digest,
+        "declared_case_ids": ["report-projection"],
+        "declared_validation_ids": ["FAST-010"],
+        "seed": 1601,
+        "producer": {"name": "mojoattention", "version": "1.0.0"},
+        "environment": {"os": "linux", "architecture": "x86-64", "python_version": "3.14.4"},
+    }
+    context, errors = evaluate_and_compose_trusted_context(
+        PROJECT_ROOT,
+        revision,
+        revision,
+        trusted_policy,
+        digest,
+        bounded_context,
+        None,
+    )
+    if context is None or errors:
+        raise OSError("report canary could not acquire trusted evidence context")
+    validation = {
+        "validation_id": "FAST-010",
+        "case_id": "report-projection",
+        "status": "pass",
+        "reproduction_argv": ["mojoattention", "validate", "--suite", "fast"],
+        "metrics": [{"name": "cases", "value": 1, "value_type": "integer", "unit": "count"}],
+        "errors": [],
+        "attachments": [],
+    }
+    schema = (PROJECT_ROOT / "schemas" / "validation-evidence.schema.json").read_bytes()
+
+    def produce() -> Path:
+        writer = EvidenceWriter(root, context)
+        return writer.finalize(verdict="pass", validations=[validation], attachments=[], schema_path=schema)
+
+    clean = produce()
+    mutated = produce()
+    (mutated / "report.md").write_bytes((mutated / "report.md").read_bytes() + b"forged\n")
+
+    def verify(path: Path) -> CanaryOutcome:
+        valid = not verify_evidence(path, schema).errors
+        return _outcome("FAST-010", valid, "contract-invalid", "FAST-CANARY-REPORT")
+
+    outcomes = verify(mutated), verify(clean)
+    for directory in (mutated, clean):
+        for child in directory.iterdir():
+            child.unlink()
+        directory.rmdir()
+    return outcomes
+
+
+def _evidence_pair(root: Path) -> tuple[CanaryOutcome, CanaryOutcome]:
+    del root
+    manifest = load_manifest(
+        (PROJECT_ROOT / "contracts" / "validation-suites" / "fast.json").read_bytes(),
+        (PROJECT_ROOT / "schemas" / "validation-suite.schema.json").read_bytes(),
+    )
+    records = tuple(
+        Observation(
+            check.validation_id,
+            check.case_id,
+            check.seed,
+            check.required_count,
+            check.required_count,
+            check.required_count,
+            0,
+            0,
+            0,
+            0,
+            manifest.runner_config.shard_index,
+            manifest.runner_config.shard_total,
+            "pass",
+        )
+        for check in manifest.checks
+    )
+
+    def close(observations: tuple[Observation, ...]) -> CanaryOutcome:
+        verdict, errors = evaluate_observations(manifest, observations)
+        valid = verdict == "pass" and not errors
+        return _outcome("FAST-011", valid, "contract-invalid", "FAST-CANARY-EVIDENCE")
+
+    return close(records[:-1]), close(records)
+
+
+def _contract_pair(root: Path) -> tuple[CanaryOutcome, CanaryOutcome]:
+    del root
+    contract = json.loads((PROJECT_ROOT / "contracts" / "acceptance" / "1-3.example.json").read_bytes())
+    context = ContractContext(
+        str(contract["source_revision"]),
+        str(contract["trusted_base_revision"]),
+        contract["prior_validation_identity"],
+    )
+    mutation = deepcopy(contract)
+    validations = mutation["required_suites"][0]["validations"]
+    validations[1]["validation_id"] = validations[0]["validation_id"]
+    mutation = issue_contract(mutation)
+
+    def validate(value: object) -> CanaryOutcome:
+        errors = validate_contract(value, PROJECT_ROOT, context)
+        valid = not errors
+        return _outcome("FAST-012", valid, "contract-invalid", "FAST-CANARY-CONTRACT")
+
+    return validate(mutation), validate(contract)
+
+
 def _canary_pair(
     check: FastCheck,
     root: Path,
     trusted_policy: TrustedPolicyInput,
 ) -> tuple[CanaryOutcome, CanaryOutcome]:
-    payload = b'{"status":"pass"}\n'
-    record = Observation("FAST-X", "case", check.seed, 1, 1, 1, 0, 0, 0, 0, 0, 1, "pass")
-    attachment = b"bounded attachment"
-    pairs: dict[str, tuple[CanaryOutcome, CanaryOutcome]] = {
-        "FAST-008": (
-            assertion_canary(AssertionFixture(0, False)),
-            assertion_canary(AssertionFixture(1, True)),
-        ),
-        "FAST-009": (
-            workflow_canary(WorkflowFixture(continue_on_error=True, propagates_exit=False)),
-            workflow_canary(WorkflowFixture()),
-        ),
-        "FAST-010": (
-            report_canary(ReportFixture(payload, _digest(payload), b'{"status":"fail"}\n')),
-            report_canary(ReportFixture(payload, _digest(payload), payload)),
-        ),
-        "FAST-011": (
-            evidence_canary(EvidenceFixture(("FAST-X",), (), attachment, _digest(attachment), False, True)),
-            evidence_canary(EvidenceFixture(("FAST-X",), (record,), attachment, _digest(attachment), True, True)),
-        ),
-        "FAST-012": (
-            contract_canary(ContractFixture(True, ("FAST-A",), ("FAST-UNKNOWN",), (1,), (1,))),
-            contract_canary(ContractFixture(True, ("FAST-A",), ("FAST-A",), (1,), (1,))),
-        ),
+    pairs = {
+        "FAST-008": _assertion_pair,
+        "FAST-009": _workflow_pair,
+        "FAST-011": _evidence_pair,
+        "FAST-012": _contract_pair,
     }
     if check.validation_id == "FAST-013":
         return _protected_pair(root, trusted_policy)
+    if check.validation_id == "FAST-010":
+        return _report_pair(root, trusted_policy)
     try:
-        return pairs[check.validation_id]
+        return pairs[check.validation_id](root)
     except KeyError as error:
         raise ValueError("unknown false-green canary") from error
 
@@ -318,6 +483,7 @@ def execute_false_green_canary(
         mutation.validation_id == check.validation_id
         and mutation.verdict == check.expected_verdict
         and not mutation.passed
+        and mutation.reason_code == _EXPECTED_REASONS.get(check.validation_id)
     )
     control_matches = control.validation_id == check.validation_id and control.verdict == "pass" and control.passed
     if not mutation_matches or not control_matches:

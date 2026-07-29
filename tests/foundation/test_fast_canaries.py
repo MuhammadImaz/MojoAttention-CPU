@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import patch
 
 from mojoattention.validation.fast import Observation, load_manifest
 from mojoattention.validation.fast_canaries import (
@@ -48,6 +49,7 @@ class FastFalseGreenCanaryTests(unittest.TestCase):
         self.assertEqual(validation_id, rejected.validation_id)
         self.assertEqual(verdict, rejected.verdict)
         self.assertFalse(rejected.passed)
+        self.assertIsNotNone(rejected.reason_code)
         accepted = clean()
         self.assertEqual(validation_id, accepted.validation_id)
         self.assertEqual("pass", accepted.verdict)
@@ -229,6 +231,34 @@ class FastFalseGreenCanaryTests(unittest.TestCase):
                         check.reproduction_argv,
                     )
             self.assertEqual((), tuple(canary_root.iterdir()))
+
+    def test_adapter_requires_the_expected_structured_mutation_reason(self) -> None:
+        manifest = load_manifest(
+            (ROOT / "contracts" / "validation-suites" / "fast.json").read_bytes(),
+            (ROOT / "schemas" / "validation-suite.schema.json").read_bytes(),
+        )
+        check = next(item for item in manifest.checks if item.validation_id == "FAST-008")
+        policy_bytes = (ROOT / "contracts" / "protected-assets.json").read_bytes()
+        schema_bytes = (ROOT / "schemas" / "protected-assets.schema.json").read_bytes()
+        trusted = TrustedPolicyInput(
+            policy_bytes,
+            schema_bytes,
+            git_blob_oid(policy_bytes),
+            _digest(policy_bytes),
+            _digest(schema_bytes),
+        )
+        rejected = type(assertion_canary(AssertionFixture(0, False)))("FAST-008", "product-fail", False, "WRONG-REASON")
+        accepted = assertion_canary(AssertionFixture(1, True))
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch(
+                "mojoattention.validation.fast_canaries._canary_pair",
+                return_value=(rejected, accepted),
+            ),
+        ):
+            result = execute_false_green_canary(check, Path(directory), trusted)
+        self.assertEqual("fail", result.observation.status)
+        self.assertEqual("FAST-CANARY-CONTROL", result.errors[0].code)
 
 
 if __name__ == "__main__":
