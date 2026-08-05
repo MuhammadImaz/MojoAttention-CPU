@@ -119,7 +119,7 @@ jobs:
             git -C "${trusted_root}" show "${TRUSTED_BASE}:schemas/product-validation-suite.schema.json" >"${control_root}/schemas/product-validation-suite.schema.json"
             printf 'trusted-base\n' >"${control_root}/registry-source"
           else
-            test "${TRUSTED_BASE}" = "98c1dc9625b74cd3a291976c9f486cb9e4b7205c" || {
+            test "${TRUSTED_BASE}" = "a35350920ceb0216170f6205d233aac8633f5a68" || {
               echo 'contract-invalid: CI applicability controls are absent outside the one-time protected bootstrap' >&2
               exit 3
             }
