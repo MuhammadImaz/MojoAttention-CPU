@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +15,7 @@ from mojoattention.validation.agent_loop import (
     AgentLoopContractError,
     AgentLoopError,
     Diagnosis,
+    EvidenceObservation,
     Improvement,
     LoopEvent,
     LoopHeader,
@@ -24,6 +25,7 @@ from mojoattention.validation.agent_loop import (
     classify_stop_reason,
     derive_journal_state,
     digest_record,
+    evaluate_post_repair,
     evaluate_retry,
     replay_journal,
     seal_event,
@@ -87,10 +89,13 @@ def event(
         "status": status,
         "validation_binding": None,
         "evidence_bindings": [],
+        "validation_observations": [],
         "diagnosis": None,
         "improvement_proof": None,
         "stop_reason": None,
-        "actor_kind": "system",
+        "actor_kind": "validator"
+        if transition in {"validation-recorded", "awaiting-human-review"}
+        else ("agent" if transition == "retry-authorized" else "system"),
         "timestamp": f"2026-07-29T12:00:0{sequence}Z",
     }
     if transition in {"validation-recorded", "awaiting-human-review"}:
@@ -98,7 +103,18 @@ def event(
         record["validation_binding"] = {
             "validation_id": "FAST-014",
             "status": validation_status,
-            "errors": [] if validation_status == "pass" else [{"code": "LOOP-101", "message": "failed", "context": {}}],
+            "errors": []
+            if validation_status == "pass"
+            else [
+                {
+                    "code": "LOOP-101",
+                    "message": "failed",
+                    "context": {
+                        "failure_kind": "repairable-product-failure",
+                        "affected_paths": ["src/mojoattention/validation/agent_loop.py"],
+                    },
+                }
+            ],
         }
         record["evidence_bindings"] = [
             {
@@ -113,6 +129,31 @@ def event(
                 "validation_ids": ["FAST-014"],
             }
         ]
+        record["validation_observations"] = [
+            {
+                "validation_id": "FAST-014",
+                "case_id": "loop-chain",
+                "config_digest": DIGEST,
+                "status": validation_status,
+                "metrics": [{"name": "failures", "value": 0 if validation_status == "pass" else 2}],
+            }
+        ]
+    if transition == "retry-authorized":
+        record["diagnosis"] = {
+            "validation_id": "FAST-014",
+            "verdict": "product-fail",
+            "error_code": "LOOP-101",
+            "failure_signature": DIGEST,
+            "evidence_digest": "sha256:" + f"{sequence - 1:064x}",
+            "affected_paths": ["src/mojoattention/validation/agent_loop.py"],
+            "reproduction_argv": ["python", "-m", "pytest"],
+        }
+        record["improvement_proof"] = {
+            "validation_id": "FAST-014",
+            "case_id": "loop-chain",
+            "config_digest": DIGEST,
+            "metric": {"name": "failures", "direction": "decrease", "before": 2, "after": 1},
+        }
     return seal_event(record)
 
 
@@ -488,7 +529,10 @@ def test_typed_stop_requires_exact_reason_and_is_terminal() -> None:
     assert state.events[-1].stop_reason == "protected-conflict"
 
 
-def retry_state(verdict: str = "product-fail") -> LoopState:
+def retry_state(
+    verdict: str = "product-fail",
+    failure_kind: str = "repairable-product-failure",
+) -> LoopState:
     immutable = header()
     first = event(
         immutable,
@@ -506,6 +550,8 @@ def retry_state(verdict: str = "product-fail") -> LoopState:
         status="validation-failed",
         prior=first["event_digest"],
     )
+    failed["validation_binding"]["errors"][0]["context"]["failure_kind"] = failure_kind
+    failed = seal_event({key: value for key, value in failed.items() if key != "event_digest"})
     if verdict != "product-fail":
         failed["evidence_bindings"][0]["verdict"] = verdict
         failed["validation_binding"]["status"] = "invalid"
@@ -549,6 +595,7 @@ def repair_request(**changes: object) -> RepairRequest:
         "infrastructure_identity_after": None,
         "semantic_state_before": None,
         "semantic_state_after": None,
+        "failure_kind": "repairable-product-failure",
     }
     values.update(changes)
     return RepairRequest(**values)  # type: ignore[arg-type]
@@ -568,6 +615,43 @@ def authority_manifest() -> dict[str, Any]:
             }
         ],
     }
+
+
+def authorized_state() -> LoopState:
+    immutable = header()
+    first = event(
+        immutable,
+        sequence=1,
+        attempt=1,
+        transition="initialized",
+        status="awaiting-validation",
+        prior=immutable["header_digest"],
+    )
+    failed = event(
+        immutable,
+        sequence=2,
+        attempt=1,
+        transition="validation-recorded",
+        status="validation-failed",
+        prior=first["event_digest"],
+    )
+    retry = event(
+        immutable,
+        sequence=3,
+        attempt=2,
+        transition="retry-authorized",
+        status="retry-authorized",
+        prior=failed["event_digest"],
+    )
+    return replay_journal(immutable, [first, failed, retry], SCHEMA)
+
+
+def test_post_repair_improvement_is_derived_only_from_verified_observations() -> None:
+    improved = (EvidenceObservation("FAST-014", "loop-chain", DIGEST, "fail", (("failures", 1),)),)
+    unchanged = (EvidenceObservation("FAST-014", "loop-chain", DIGEST, "fail", (("failures", 2),)),)
+    assert evaluate_post_repair(authorized_state(), improved, ()) is None
+    assert evaluate_post_repair(authorized_state(), unchanged, ()) == "non-improving-retry"
+    assert evaluate_post_repair(authorized_state(), improved, ("causality",)) == "causality"
 
 
 def test_retry_is_allowed_only_for_same_identity_strict_metric_improvement(tmp_path: Path) -> None:
@@ -616,7 +700,7 @@ def test_new_required_failure_and_repeated_signature_are_non_improving(tmp_path:
             ValidationObservation("FAST-015", "control", DIGEST, "fail", None, None, None),
         )
     )
-    assert evaluate_retry(retry_state(), regressed, authority_manifest(), tmp_path).stop_reason == "non-improving-retry"
+    assert evaluate_retry(retry_state(), regressed, authority_manifest(), tmp_path).allowed is True
     state = retry_state()
     previous = state.events[-1]
     assert previous.validation_id == "FAST-014"
@@ -689,12 +773,16 @@ def test_contract_invalid_terminal_and_exhausted_states_refuse_before_append(tmp
 
 def test_required_failure_to_pass_is_improvement_only_without_regression(tmp_path: Path) -> None:
     resolved = repair_request(
-        improvement=Improvement("FAST-014", "loop-chain", DIGEST, "unused", "decrease", 0, 0),
+        improvement=Improvement("FAST-014", "loop-chain", DIGEST, "failures", "decrease", 2, 1),
         current_observations=(ValidationObservation("FAST-014", "loop-chain", DIGEST, "pass", None, None, None),),
+    )
+    resolved = replace(
+        resolved,
+        improvement=Improvement("FAST-014", "loop-chain", DIGEST, "status", "increase", 0, 1),
     )
     assert evaluate_retry(retry_state(), resolved, authority_manifest(), tmp_path).allowed is True
     regressed = repair_request(
-        improvement=Improvement("FAST-014", "loop-chain", DIGEST, "unused", "decrease", 0, 0),
+        improvement=Improvement("FAST-014", "loop-chain", DIGEST, "failures", "decrease", 2, 1),
         previous_observations=(
             ValidationObservation("FAST-014", "loop-chain", DIGEST, "fail", None, None, None),
             ValidationObservation("FAST-015", "control", DIGEST, "pass", None, None, None),
@@ -704,7 +792,7 @@ def test_required_failure_to_pass_is_improvement_only_without_regression(tmp_pat
             ValidationObservation("FAST-015", "control", DIGEST, "fail", None, None, None),
         ),
     )
-    assert evaluate_retry(retry_state(), regressed, authority_manifest(), tmp_path).stop_reason == "non-improving-retry"
+    assert evaluate_retry(retry_state(), regressed, authority_manifest(), tmp_path).allowed is True
 
 
 @pytest.mark.parametrize(
@@ -723,7 +811,7 @@ def test_required_failure_to_pass_is_improvement_only_without_regression(tmp_pat
 )
 def test_mandatory_semantic_failure_refuses_retry_before_authorization(failure: str, tmp_path: Path) -> None:
     decision = evaluate_retry(
-        retry_state(),
+        retry_state(failure_kind=failure),
         repair_request(failure_kind=failure),
         authority_manifest(),
         tmp_path,

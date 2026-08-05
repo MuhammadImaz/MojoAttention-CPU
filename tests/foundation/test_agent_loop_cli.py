@@ -249,6 +249,29 @@ def test_evaluate_authenticates_and_admits_evidence_before_durable_pass_append()
             return_value=(authenticated_controls(), b"{}", {}),
         ),
         patch("mojoattention.cli.main._read_protected_caller_bytes", return_value=json.dumps(event).encode()),
+        patch(
+            "mojoattention.cli.main.verify_evidence",
+            return_value=type(
+                "Verification",
+                (),
+                {
+                    "errors": (),
+                    "manifest": {
+                        "verdict": "pass",
+                        "config_digest": "sha256:" + "e" * 64,
+                        "validations": [
+                            {
+                                "validation_id": "FAST-014",
+                                "case_id": "fast-014",
+                                "status": "pass",
+                                "metrics": [],
+                                "errors": [],
+                            }
+                        ],
+                    },
+                },
+            )(),
+        ),
         patch("mojoattention.cli.main.admit_completed_evidence", return_value=binding) as admit,
     ):
         journal_class.return_value.inspect.return_value = state()

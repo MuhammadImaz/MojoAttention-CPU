@@ -50,6 +50,7 @@ def stopped_event() -> dict[str, Any]:
         "status": "stopped",
         "validation_binding": None,
         "evidence_bindings": [],
+        "validation_observations": [],
         "diagnosis": None,
         "improvement_proof": None,
         "stop_reason": "causality",

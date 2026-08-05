@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,17 +15,20 @@ from typing import Any, NoReturn
 from mojoattention.config import ProjectPolicy
 from mojoattention.validation.acceptance import ContractContext, ContractError, validate_contract
 from mojoattention.validation.agent_loop import (
+    SEMANTIC_STOP_FAILURES,
     AgentLoopContractError,
     AgentLoopJournal,
     AuthenticatedLoopControls,
     ControlAcquisitionRequest,
     Diagnosis,
+    EvidenceObservation,
     Improvement,
     LoopState,
     RepairRequest,
     ValidationObservation,
     admit_completed_evidence,
     authenticate_loop_controls,
+    evaluate_post_repair,
     evaluate_retry,
 )
 from mojoattention.validation.authority import authorize_read, validate_manifest
@@ -779,33 +783,107 @@ def run_agent_loop_evaluate(root: Path, args: argparse.Namespace) -> tuple[LoopS
     if not isinstance(event, dict):
         raise ValueError("agent loop event input must be an object")
     if args.evidence is not None:
-        binding = admit_completed_evidence(root, state, controls, Path(args.evidence))
+        evidence_path = Path(args.evidence)
+        verified = verify_evidence(evidence_path, controls.evidence_schema)
+        if verified.errors or verified.manifest is None:
+            raise ValueError("agent loop evidence is invalid")
+        manifest = verified.manifest
+        validations = manifest["validations"]
+        observation_records = [
+            {
+                "validation_id": item["validation_id"],
+                "case_id": item["case_id"],
+                "config_digest": manifest["config_digest"],
+                "status": item["status"],
+                "metrics": [
+                    {"name": metric["name"], "value": metric["value"]}
+                    for metric in item["metrics"]
+                    if metric["value_type"] == "integer"
+                ],
+            }
+            for item in validations
+        ]
+        event["validation_observations"] = observation_records
+        selected = next(
+            (item for item in validations if item["status"] == "fail"),
+            validations[0],
+        )
+        normalized_errors = []
+        for item in selected["errors"]:
+            code = item["code"] if re.fullmatch(r"LOOP-[0-9]{3}", item["code"]) else "LOOP-101"
+            context = dict(item["context"])
+            context["source_error_code"] = item["code"]
+            normalized_errors.append({"code": code, "message": item["message"], "context": context})
+        event["validation_binding"] = {
+            "validation_id": selected["validation_id"],
+            "status": selected["status"] if manifest["verdict"] in {"pass", "product-fail"} else "invalid",
+            "errors": normalized_errors
+            or (
+                []
+                if selected["status"] == "pass"
+                else [
+                    {
+                        "code": "LOOP-101",
+                        "message": "validation failed",
+                        "context": {},
+                    }
+                ]
+            ),
+        }
+        event["actor_kind"] = "validator"
+        binding = admit_completed_evidence(root, state, controls, evidence_path)
         event["evidence_bindings"] = [asdict(binding)]
         verdict = binding.verdict
         if verdict == "pass":
             event["transition"] = "awaiting-human-review"
             event["status"] = "awaiting-human-review"
         elif verdict == "product-fail":
-            event["transition"] = "validation-recorded"
-            event["status"] = "validation-failed"
+            failure_kinds = tuple(
+                str(error["context"]["failure_kind"])
+                for item in validations
+                for error in item["errors"]
+                if isinstance(error["context"].get("failure_kind"), str)
+            )
+            observations = tuple(
+                EvidenceObservation(
+                    item["validation_id"],
+                    item["case_id"],
+                    item["config_digest"],
+                    item["status"],
+                    tuple((metric["name"], metric["value"]) for metric in item["metrics"]),
+                )
+                for item in observation_records
+            )
+            post_repair_stop = (
+                evaluate_post_repair(state, observations, failure_kinds) if state.status == "retry-authorized" else None
+            )
+            event["transition"] = "stopped" if post_repair_stop is not None else "validation-recorded"
+            event["status"] = "stopped" if post_repair_stop is not None else "validation-failed"
+            event["stop_reason"] = post_repair_stop
         else:
             event["transition"] = "stopped"
             event["status"] = "stopped"
             event["stop_reason"] = "human-escalation"
     elif event.get("transition") == "retry-authorized":
+        event["validation_observations"] = []
         request_payload = event.pop("repair_request")
         if not isinstance(request_payload, dict):
             raise ValueError("repair request must be an object")
-        decision = evaluate_retry(state, _repair_request(request_payload), authority, root)
+        request = _repair_request(request_payload)
+        decision = evaluate_retry(state, request, authority, root)
         if decision.allowed:
             verdict = "product-fail"
             event["status"] = "retry-authorized"
+            event["diagnosis"] = asdict(request.diagnosis)
+            event["improvement_proof"] = asdict(request.improvement)
+            event["actor_kind"] = "agent"
         else:
             verdict = "product-fail"
             event["transition"] = "stopped"
             event["status"] = "stopped"
             event["stop_reason"] = decision.stop_reason
     else:
+        event["validation_observations"] = []
         verdict = "product-fail"
         if event.get("transition") != "stopped":
             raise ValueError("evaluation without evidence must record a typed stop")
@@ -834,6 +912,18 @@ def _agent_loop_payload(state: LoopState, verdict: str) -> dict[str, object]:
 
 
 def _agent_loop_state_verdict(state: LoopState) -> str:
+    if state.status == "stopped":
+        reason = state.events[-1].stop_reason
+        return (
+            "product-fail"
+            if reason in SEMANTIC_STOP_FAILURES
+            or reason
+            in {
+                "non-improving-retry",
+                "retry-budget-exhausted",
+            }
+            else "contract-invalid"
+        )
     for event in reversed(state.events):
         if event.evidence_bindings:
             return event.evidence_bindings[-1].verdict

@@ -301,6 +301,30 @@
         }
       }
     },
+    "evidence_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["validation_id", "case_id", "config_digest", "status", "metrics"],
+      "properties": {
+        "validation_id": {"$ref": "#/$defs/validation_id"},
+        "case_id": {"$ref": "#/$defs/id"},
+        "config_digest": {"$ref": "#/$defs/digest"},
+        "status": {"enum": ["pass", "fail"]},
+        "metrics": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "value"],
+            "properties": {
+              "name": {"$ref": "#/$defs/id"},
+              "value": {"type": "integer"}
+            }
+          }
+        }
+      }
+    },
     "header": {
       "type": "object",
       "additionalProperties": false,
@@ -391,6 +415,7 @@
         "status",
         "validation_binding",
         "evidence_bindings",
+        "validation_observations",
         "diagnosis",
         "improvement_proof",
         "stop_reason",
@@ -460,6 +485,11 @@
           "items": {
             "$ref": "#/$defs/evidence_binding"
           }
+        },
+        "validation_observations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/evidence_observation"}
         },
         "diagnosis": {
           "anyOf": [

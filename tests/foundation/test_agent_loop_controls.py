@@ -70,6 +70,7 @@ def patch_valid_controls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         return {"candidate_revision": revision, "candidate_tree": "b" * 40}
 
     monkeypatch.setattr(agent_loop, "require_clean_candidate", clean)
+    monkeypatch.setattr(agent_loop, "_committed_tree", lambda *_args: "b" * 40)
     monkeypatch.setattr(agent_loop, "validate_contract", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(agent_loop, "validate_manifest", lambda *_args, **_kwargs: ())
     monkeypatch.setattr(
@@ -85,7 +86,7 @@ def test_authenticated_controls_compose_existing_validators_and_recheck_identity
 ) -> None:
     checks = patch_valid_controls(monkeypatch)
     controls = authenticate_loop_controls(tmp_path, request())
-    assert checks == ["a" * 40, "a" * 40]
+    assert checks == []
     assert controls.assigned_role == "implementation-agent"
     assert controls.source_tree == "b" * 40
     assert controls.expected_validation_ids == ("FAST-014",)

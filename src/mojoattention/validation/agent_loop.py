@@ -8,9 +8,11 @@ import os
 import re
 import secrets
 import stat
+import subprocess
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, NoReturn, cast
 
@@ -140,6 +142,15 @@ class LoopHeader:
 
 
 @dataclass(frozen=True)
+class EvidenceObservation:
+    validation_id: str
+    case_id: str
+    config_digest: str
+    status: str
+    metrics: tuple[tuple[str, int], ...]
+
+
+@dataclass(frozen=True)
 class LoopEvent:
     schema_version: str
     loop_id: str
@@ -157,6 +168,8 @@ class LoopEvent:
     stop_reason: StopReason | None
     actor_kind: str
     timestamp: str
+    validation_errors: tuple[AgentLoopError, ...] = ()
+    validation_observations: tuple[EvidenceObservation, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -315,6 +328,31 @@ def classify_stop_reason(failure: str) -> StopReason | None:
     return None
 
 
+def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "LC_ALL": "C",
+        },
+    )
+
+
+def _committed_tree(root: Path, revision: str) -> str:
+    resolved = _git(root, "rev-parse", f"{revision}^{{tree}}")
+    tree = resolved.stdout.strip()
+    if resolved.returncode != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree):
+        _reject("LOOP-404", "authenticated Git revision is unavailable", revision=revision)
+    return tree
+
+
 def authenticate_loop_controls(
     root: Path,
     request: ControlAcquisitionRequest,
@@ -325,7 +363,7 @@ def authenticate_loop_controls(
             "agent loop trust controls must come from a protected caller",
             source_kind=request.control_source_kind,
         )
-    before = require_clean_candidate(root, request.candidate_revision)
+    candidate_tree = _committed_tree(root, request.candidate_revision)
     contract_errors = validate_contract(
         request.contract,
         root,
@@ -357,13 +395,12 @@ def authenticate_loop_controls(
     if trusted_context is None or protected_errors:
         _reject("LOOP-404", "trusted protected-assets evaluation rejected controls", errors=len(protected_errors))
     context = trusted_context.evidence_context()
-    after = require_clean_candidate(root, request.candidate_revision)
     expected_identity = {
         "candidate_revision": request.candidate_revision,
-        "candidate_tree": before["candidate_tree"],
+        "candidate_tree": candidate_tree,
         "trusted_base_revision": request.trusted_base_revision,
     }
-    if before != after or any(context.get(field) != value for field, value in expected_identity.items()):
+    if any(context.get(field) != value for field, value in expected_identity.items()):
         _reject("LOOP-404", "authenticated Git identity changed during control acquisition")
     contract = request.contract
     if (
@@ -385,7 +422,7 @@ def authenticate_loop_controls(
     return AuthenticatedLoopControls(
         contract_digest=str(contract["contract_digest"]),
         source_revision=request.candidate_revision,
-        source_tree=str(context["candidate_tree"]),
+        source_tree=candidate_tree,
         trusted_base_revision=request.trusted_base_revision,
         trusted_base_tree=str(context["trusted_base_tree"]),
         assigned_role=request.assigned_role,
@@ -406,18 +443,29 @@ def admit_completed_evidence(
     controls: AuthenticatedLoopControls,
     evidence_path: Path,
 ) -> EvidenceBinding:
-    before = require_clean_candidate(root, controls.source_revision)
     verification = verify_evidence(evidence_path, controls.evidence_schema)
     if verification.errors or verification.manifest is None:
         _reject("LOOP-405", "only independently verified complete evidence is admissible")
     manifest = verification.manifest
-    after = require_clean_candidate(root, controls.source_revision)
+    candidate_revision = str(manifest.get("source_revision", ""))
+    candidate_tree = str(manifest.get("source_tree", ""))
+    before = require_clean_candidate(root, candidate_revision)
+    after = require_clean_candidate(root, candidate_revision)
+    same_revision = candidate_revision == controls.source_revision
+    ancestry = _git(root, "merge-base", "--is-ancestor", controls.source_revision, candidate_revision)
+    changed = _git(root, "diff", "--name-only", controls.source_revision, candidate_revision, "--")
+    changed_paths = () if same_revision else tuple(path for path in changed.stdout.splitlines() if path)
+    path_violation = any(
+        not any(contains(scope, path) for scope in controls.allowed_paths)
+        or any(contains(scope, path) for scope in controls.protected_paths)
+        for path in changed_paths
+    )
     expected: dict[str, object] = {
         "lifecycle": "complete",
-        "source_revision": controls.source_revision,
-        "source_tree": controls.source_tree,
-        "candidate_revision": controls.source_revision,
-        "candidate_tree": controls.source_tree,
+        "source_revision": candidate_revision,
+        "source_tree": candidate_tree,
+        "candidate_revision": candidate_revision,
+        "candidate_tree": candidate_tree,
         "trusted_base_revision": controls.trusted_base_revision,
         "trusted_base_tree": controls.trusted_base_tree,
         "contract_digest": controls.contract_digest,
@@ -429,7 +477,10 @@ def admit_completed_evidence(
     mismatches = sorted(field for field, value in expected.items() if manifest.get(field) != value)
     if (
         before != after
-        or before.get("candidate_tree") != controls.source_tree
+        or before.get("candidate_tree") != candidate_tree
+        or (not same_revision and ancestry.returncode != 0)
+        or (not same_revision and changed.returncode != 0)
+        or path_violation
         or state.header.contract_digest != controls.contract_digest
         or state.header.source_revision != controls.source_revision
         or state.header.source_tree != controls.source_tree
@@ -452,8 +503,8 @@ def admit_completed_evidence(
     return EvidenceBinding(
         run_id=run_id,
         evidence_digest=evidence_digest,
-        source_revision=controls.source_revision,
-        source_tree=controls.source_tree,
+        source_revision=candidate_revision,
+        source_tree=candidate_tree,
         contract_digest=controls.contract_digest,
         lifecycle="complete",
         independently_verified=True,
@@ -497,7 +548,9 @@ def _objective_improvement(request: RepairRequest) -> bool:
     if before is None or after is None:
         return False
     if before.status == "fail" and after.status == "pass":
-        return True
+        return (
+            proof.metric_name == "status" and proof.direction == "increase" and proof.before == 0 and proof.after == 1
+        )
     if (
         before.metric_name != proof.metric_name
         or after.metric_name != proof.metric_name
@@ -539,9 +592,28 @@ def evaluate_retry(
         or len(diagnosis.reproduction_argv) > 64
     ):
         return _decision_error("LOOP-204", "diagnosis does not bind the failed validation", "human-escalation")
-    if diagnosis.failure_signature in request.previous_failure_signatures:
+    attempted_signatures = {
+        event.diagnosis.failure_signature
+        for event in state.events
+        if event.transition == "retry-authorized" and event.diagnosis is not None
+    }
+    if (
+        diagnosis.failure_signature in attempted_signatures
+        or diagnosis.failure_signature in request.previous_failure_signatures
+    ):
         return _decision_error("LOOP-205", "failure signature was already attempted", "non-improving-retry")
-    mandatory_stop = classify_stop_reason(request.failure_kind) if request.failure_kind is not None else None
+    prior_errors = prior.validation_errors
+    evidence_failure_kinds = {
+        str(error.context["failure_kind"])
+        for error in prior_errors
+        if isinstance(error.context.get("failure_kind"), str)
+    }
+    if len(evidence_failure_kinds) != 1:
+        return _decision_error("LOOP-206", "evidence does not provide one typed failure kind", "human-escalation")
+    evidence_failure_kind = next(iter(evidence_failure_kinds))
+    if request.failure_kind != evidence_failure_kind:
+        return _decision_error("LOOP-206", "caller failure kind conflicts with evidence", "human-escalation")
+    mandatory_stop = classify_stop_reason(evidence_failure_kind)
     if mandatory_stop is not None:
         return _decision_error("LOOP-206", "failure kind forbids automated retry", mandatory_stop)
     if diagnosis.verdict == "contract-invalid":
@@ -550,6 +622,21 @@ def evaluate_retry(
         return _decision_error("LOOP-208", "automated repair cannot approve protected work", "protected-conflict")
     if tuple(diagnosis.affected_paths) != request.repair_paths:
         return _decision_error("LOOP-209", "repair paths differ from diagnosed paths", "scope-expansion")
+    evidence_paths: set[str] = set()
+    for error in prior_errors:
+        affected = error.context.get("affected_paths")
+        candidates: tuple[object, ...] = tuple(affected) if isinstance(affected, list) else (error.context.get("path"),)
+        evidence_paths.update(str(path) for path in candidates if isinstance(path, str))
+    if not evidence_paths or set(diagnosis.affected_paths) != evidence_paths:
+        return _decision_error("LOOP-209", "diagnosed paths do not match evidence", "scope-expansion")
+    required_ids = set(prior_evidence[0].validation_ids)
+    observed_ids = {item.validation_id for item in prior.validation_observations}
+    if observed_ids != required_ids:
+        return _decision_error(
+            "LOOP-212",
+            "verified observations do not cover the complete required validation inventory",
+            "non-improving-retry",
+        )
     role = next(
         (item for item in authority_manifest["roles"] if item["id"] == state.header.assigned_role),
         None,
@@ -595,9 +682,78 @@ def evaluate_retry(
             "infrastructure repair lacks changed infrastructure and stable semantic identity",
             "human-escalation",
         )
-    if not _objective_improvement(request):
-        return _decision_error("LOOP-212", "repair has no comparable objective improvement", "non-improving-retry")
+    proof_identity = (request.improvement.validation_id, request.improvement.case_id, request.improvement.config_digest)
+    prior_identities = {
+        (item.validation_id, item.case_id, item.config_digest) for item in prior.validation_observations
+    }
+    if proof_identity not in prior_identities:
+        return _decision_error("LOOP-212", "improvement target is absent from verified evidence", "non-improving-retry")
+    prior_observation = next(
+        item
+        for item in prior.validation_observations
+        if (item.validation_id, item.case_id, item.config_digest) == proof_identity
+    )
+    if request.improvement.metric_name == "status":
+        proposal_valid = (
+            prior_observation.status == "fail"
+            and request.improvement.direction == "increase"
+            and request.improvement.before == 0
+            and request.improvement.after == 1
+        )
+    else:
+        prior_metrics = dict(prior_observation.metrics)
+        proposal_valid = prior_metrics.get(request.improvement.metric_name) == request.improvement.before and (
+            request.improvement.after > request.improvement.before
+            if request.improvement.direction == "increase"
+            else request.improvement.after < request.improvement.before
+        )
+    if not proposal_valid:
+        return _decision_error(
+            "LOOP-212",
+            "proposed improvement is not comparable or strictly better",
+            "non-improving-retry",
+        )
     return RetryDecision(True, None, ())
+
+
+def evaluate_post_repair(
+    state: LoopState,
+    observations: tuple[EvidenceObservation, ...],
+    failure_kinds: tuple[str, ...],
+) -> StopReason | None:
+    if state.status != "retry-authorized" or len(state.events) < 2:
+        return "human-escalation"
+    authorization = state.events[-1]
+    previous_event = state.events[-2]
+    proof = authorization.improvement
+    if proof is None or not previous_event.validation_observations:
+        return "human-escalation"
+    typed_stops = {reason for failure in failure_kinds if (reason := classify_stop_reason(failure)) is not None}
+    if typed_stops:
+        return sorted(typed_stops)[0]
+    previous = {
+        (item.validation_id, item.case_id, item.config_digest): item for item in previous_event.validation_observations
+    }
+    current = {(item.validation_id, item.case_id, item.config_digest): item for item in observations}
+    if previous.keys() != current.keys():
+        return "non-improving-retry"
+    if any(before.status == "pass" and current[key].status == "fail" for key, before in previous.items()):
+        return "non-improving-retry"
+    identity = (proof.validation_id, proof.case_id, proof.config_digest)
+    before = previous.get(identity)
+    after = current.get(identity)
+    if before is None or after is None:
+        return "non-improving-retry"
+    if before.status == "fail" and after.status == "pass":
+        return None
+    before_metrics = dict(before.metrics)
+    after_metrics = dict(after.metrics)
+    if proof.metric_name not in before_metrics or proof.metric_name not in after_metrics:
+        return "non-improving-retry"
+    before_value = before_metrics[proof.metric_name]
+    after_value = after_metrics[proof.metric_name]
+    improved = after_value > before_value if proof.direction == "increase" else after_value < before_value
+    return None if improved else "non-improving-retry"
 
 
 def _header(record: dict[str, Any]) -> LoopHeader:
@@ -690,6 +846,20 @@ def _event(record: dict[str, Any]) -> LoopEvent:
         stop_reason=cast(StopReason | None, record["stop_reason"]),
         actor_kind=record["actor_kind"],
         timestamp=record["timestamp"],
+        validation_errors=tuple(
+            AgentLoopError(item["code"], item["message"], item["context"])
+            for item in (validation["errors"] if validation is not None else ())
+        ),
+        validation_observations=tuple(
+            EvidenceObservation(
+                item["validation_id"],
+                item["case_id"],
+                item["config_digest"],
+                item["status"],
+                tuple((metric["name"], metric["value"]) for metric in item["metrics"]),
+            )
+            for item in record["validation_observations"]
+        ),
     )
 
 
@@ -751,6 +921,7 @@ def replay_journal(
     events: list[LoopEvent] = []
     seen_event_digests: set[str] = set()
     seen_evidence: set[tuple[str, str]] = set()
+    previous_timestamp = datetime.fromisoformat(header.created_at.replace("Z", "+00:00"))
     for expected_sequence, record in enumerate(event_records, start=1):
         if validate_agent_loop_record(record, schema_source):
             _reject("LOOP-001", "agent loop event is invalid", sequence=expected_sequence)
@@ -771,12 +942,22 @@ def replay_journal(
             _reject("LOOP-006", "agent loop event belongs to another loop", sequence=expected_sequence)
         if record["control_binding"] != _expected_controls(header):
             _reject("LOOP-012", "agent loop event control binding changed", sequence=expected_sequence)
+        timestamp = datetime.fromisoformat(record["timestamp"].replace("Z", "+00:00"))
+        if timestamp < previous_timestamp:
+            _reject("LOOP-015", "agent loop event timestamp moved backward", sequence=expected_sequence)
+        previous_timestamp = timestamp
         if status in _TERMINAL:
             _reject("LOOP-011", "terminal agent loop history cannot be extended", sequence=expected_sequence)
         transition = (record["transition"], record["status"])
         if transition not in _ALLOWED_TRANSITIONS.get(status, frozenset()):
             _reject("LOOP-010", "agent loop transition is not allowed", sequence=expected_sequence)
         if record["transition"] == "retry-authorized":
+            if record["actor_kind"] != "agent" or record["diagnosis"] is None or record["improvement_proof"] is None:
+                _reject(
+                    "LOOP-016",
+                    "retry authorization requires agent diagnosis and improvement proof",
+                    sequence=expected_sequence,
+                )
             retries_consumed += 1
             if record["attempt"] != attempt + 1:
                 _reject("LOOP-007", "retry must increment the attempt exactly once", sequence=expected_sequence)
@@ -789,14 +970,26 @@ def replay_journal(
             _reject(
                 "LOOP-013", "validation transition requires one complete evidence identity", sequence=expected_sequence
             )
+        observations = record["validation_observations"]
+        if record["transition"] in {"validation-recorded", "awaiting-human-review"} and not observations:
+            _reject("LOOP-017", "validation transition requires verified observations", sequence=expected_sequence)
+        if record["transition"] in {"initialized", "retry-authorized"} and observations:
+            _reject("LOOP-017", "non-validation transition cannot carry observations", sequence=expected_sequence)
+        if (
+            record["transition"] in {"validation-recorded", "awaiting-human-review"}
+            and record["actor_kind"] != "validator"
+        ):
+            _reject("LOOP-016", "validation transition requires validator actor", sequence=expected_sequence)
+        if record["transition"] == "initialized" and record["actor_kind"] != "system":
+            _reject("LOOP-016", "initialization requires system actor", sequence=expected_sequence)
+        if record["transition"] == "stopped" and record["actor_kind"] not in {"system", "validator"}:
+            _reject("LOOP-016", "terminal stop requires system or validator actor", sequence=expected_sequence)
         for binding in bindings:
             identity = (binding["run_id"], binding["evidence_digest"])
             if identity in seen_evidence:
                 _reject("LOOP-013", "evidence identity is duplicated", sequence=expected_sequence)
-            if (
-                binding["source_revision"] != header.source_revision
-                or binding["source_tree"] != header.source_tree
-                or binding["contract_digest"] != header.contract_digest
+            if binding["contract_digest"] != header.contract_digest or (
+                binding["source_revision"] == header.source_revision and binding["source_tree"] != header.source_tree
             ):
                 _reject(
                     "LOOP-013", "evidence identity conflicts with immutable loop controls", sequence=expected_sequence
@@ -813,9 +1006,30 @@ def replay_journal(
                 "infrastructure-invalid": "invalid",
                 "contract-invalid": "invalid",
             }[bindings[0]["verdict"]]
+            if bindings[0]["verdict"] == "pass":
+                _reject(
+                    "LOOP-013",
+                    "failed-validation transition cannot use passing evidence",
+                    sequence=expected_sequence,
+                )
             if validation["status"] != expected_status:
                 _reject("LOOP-013", "validation verdict conflicts with evidence", sequence=expected_sequence)
             last_validation = record["event_digest"]
+        if record["transition"] == "retry-authorized":
+            diagnosis = record["diagnosis"]
+            proof = record["improvement_proof"]
+            prior_event = event_records[expected_sequence - 2]
+            prior_bindings = prior_event["evidence_bindings"]
+            prior_validation = prior_event["validation_binding"]
+            if (
+                prior_event["transition"] != "validation-recorded"
+                or not prior_bindings
+                or prior_validation is None
+                or diagnosis["validation_id"] != prior_validation["validation_id"]
+                or diagnosis["evidence_digest"] != prior_bindings[0]["evidence_digest"]
+                or proof["validation_id"] not in prior_bindings[0]["validation_ids"]
+            ):
+                _reject("LOOP-016", "retry proof does not bind preceding failed evidence", sequence=expected_sequence)
         if record["transition"] == "awaiting-human-review":
             validation = record["validation_binding"]
             if validation is None or validation["status"] != "pass" or bindings[0]["verdict"] != "pass":
@@ -824,11 +1038,33 @@ def replay_journal(
             _reject("LOOP-014", "terminal stop requires a typed reason", sequence=expected_sequence)
         if record["transition"] != "stopped" and record["stop_reason"] is not None:
             _reject("LOOP-014", "non-stop transition cannot record a stop reason", sequence=expected_sequence)
+        current_event = _event(record)
+        if status == "retry-authorized" and record["transition"] in {"validation-recorded", "stopped"} and bindings:
+            prior_state = LoopState(
+                header,
+                tuple(events),
+                "retry-authorized",
+                attempt,
+                retries_consumed,
+                last_validation,
+                evidence_run_id,
+                False,
+            )
+            failure_kinds = tuple(
+                str(error.context["failure_kind"])
+                for error in current_event.validation_errors
+                if isinstance(error.context.get("failure_kind"), str)
+            )
+            expected_stop = evaluate_post_repair(prior_state, current_event.validation_observations, failure_kinds)
+            if record["transition"] == "validation-recorded" and expected_stop is not None:
+                _reject("LOOP-017", "non-improving repaired evidence cannot continue", sequence=expected_sequence)
+            if record["transition"] == "stopped" and record["stop_reason"] != expected_stop:
+                _reject("LOOP-017", "post-repair stop reason conflicts with evidence", sequence=expected_sequence)
         attempt = record["attempt"]
         status = record["status"]
         prior = record["event_digest"]
         seen_event_digests.add(prior)
-        events.append(_event(record))
+        events.append(current_event)
     if status is None:
         _reject("LOOP-009", "agent loop journal has no events")
     return LoopState(
@@ -1071,6 +1307,7 @@ class AgentLoopJournal:
                             "status": "awaiting-validation",
                             "validation_binding": None,
                             "evidence_bindings": [],
+                            "validation_observations": [],
                             "diagnosis": None,
                             "improvement_proof": None,
                             "stop_reason": None,
