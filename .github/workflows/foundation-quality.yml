@@ -24,7 +24,6 @@ jobs:
       GIT_PAGER: cat
       LC_ALL: C
       UV_DEFAULT_INDEX: https://pypi.org/simple
-      UV_INDEX: https://modular.gateway.scarf.sh/simple/ https://download.pytorch.org/whl/cpu
     steps:
       - name: Resolve immutable event identity
         id: event_identity
