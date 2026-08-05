@@ -51,7 +51,7 @@ class FastRunnerTests(unittest.TestCase):
     def test_manifest_is_immutable_and_digest_bound(self) -> None:
         manifest = self.manifest()
         self.assertEqual("fast", manifest.suite_id)
-        self.assertEqual(13, len(manifest.checks))
+        self.assertEqual(14, len(manifest.checks))
         with self.assertRaises(FrozenInstanceError):
             manifest.checks[0].case_id = "changed"  # type: ignore[misc]
 

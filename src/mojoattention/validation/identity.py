@@ -6,6 +6,7 @@ import platform
 import re
 import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 EXPECTED = {
     "python": "3.14.4",
@@ -67,6 +68,40 @@ def detect_identity() -> dict[str, str]:
         }
     )
     return detected
+
+
+def require_clean_candidate(root: Path, revision: str) -> dict[str, str]:
+    environment = {
+        "PATH": os.environ.get("PATH", ""),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "LC_ALL": "C",
+    }
+
+    def git(*arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=root,
+            capture_output=True,
+            check=False,
+            text=True,
+            env=environment,
+        )
+
+    head = git("rev-parse", "HEAD")
+    tree = git("rev-parse", "HEAD^{tree}")
+    dirty = git("status", "--porcelain=v1", "--untracked-files=no")
+    if (
+        head.returncode != 0
+        or head.stdout.strip() != revision
+        or tree.returncode != 0
+        or not re.fullmatch(r"[0-9a-f]{40}", tree.stdout.strip())
+        or dirty.returncode != 0
+        or dirty.stdout
+    ):
+        raise ValueError("candidate checkout identity or tracked cleanliness is invalid")
+    return {"candidate_revision": revision, "candidate_tree": tree.stdout.strip()}
 
 
 def _package_version(name: str) -> str:

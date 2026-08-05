@@ -14,6 +14,19 @@ Protected-path approval is a separate envelope. The contract stores only its `au
 
 The `evidence-producer` role may only generate contracted output indirectly below
 `reports/runs`; it has no direct write, approval, rename, copy, or merge authority.
+The separate `agent-loop-producer` role has the same deny-by-default shape for
+`reports/agent-loops`; the two writer scopes do not overlap.
+
+`FAST-014` is reserved as the required Agent Loop policy canary. Its protected
+manifest/schema inventory must be externally authorized and merged before its
+production mutation/control evaluator can become trusted authority.
+
+`acceptance/1-7-agent-loop.example.json` is the schema-valid Acceptance
+Contract v2 template referenced by `FAST-014`. It binds all 14 ordered checks
+and the exact manifest, runner-config, and Fast protocol digests. Its example
+source revision is deliberately non-authoritative: a protected caller must
+externally issue the contract for the exact candidate commit and separately
+supply human authorization. The tracked template cannot authorize itself.
 
 The version 2 envelope binds the exact base/candidate commit and tree IDs, trusted policy blob and digest, complete change-set digest, contract digest, exact protected paths, and independently supplied human approval anchor. Its provenance digest is SHA-256 over canonical compact sorted JSON with only `provenance_digest` omitted.
 

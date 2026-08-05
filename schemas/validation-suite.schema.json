@@ -21,13 +21,13 @@
     "manifest_digest": {"$ref": "#/$defs/digest"},
     "config_digest": {"$ref": "#/$defs/digest"},
     "seed": {"const": 1601},
-    "required_total": {"const": 13},
+    "required_total": {"const": 14},
     "reference_target_ns": {"const": 180000000000},
     "runner_config": {"$ref": "#/$defs/runner_config"},
     "checks": {
       "type": "array",
-      "minItems": 13,
-      "maxItems": 13,
+      "minItems": 14,
+      "maxItems": 14,
       "prefixItems": [
         {"$ref": "#/$defs/fast_001"},
         {"$ref": "#/$defs/fast_002"},
@@ -41,7 +41,8 @@
         {"$ref": "#/$defs/fast_010"},
         {"$ref": "#/$defs/fast_011"},
         {"$ref": "#/$defs/fast_012"},
-        {"$ref": "#/$defs/fast_013"}
+        {"$ref": "#/$defs/fast_013"},
+        {"$ref": "#/$defs/fast_014"}
       ],
       "items": false
     }
@@ -132,6 +133,7 @@
     "fast_010": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-010"}, "case_id": {"const": "tampered-report-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]},
     "fast_011": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-011"}, "case_id": {"const": "incomplete-evidence-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]},
     "fast_012": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-012"}, "case_id": {"const": "invalid-contract-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]},
-    "fast_013": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-013"}, "case_id": {"const": "unauthorized-change-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]}
+    "fast_013": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-013"}, "case_id": {"const": "unauthorized-change-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]},
+    "fast_014": {"allOf": [{"$ref": "#/$defs/check"}, {"properties": {"validation_id": {"const": "FAST-014"}, "case_id": {"const": "agent-loop-policy-canary"}, "kind": {"const": "canary"}, "expected_verdict": {"const": "contract-invalid"}}}]}
   }
 }

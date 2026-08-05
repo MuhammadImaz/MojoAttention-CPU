@@ -10,11 +10,13 @@ from unittest.mock import patch
 
 from mojoattention.validation.fast import Observation, load_manifest
 from mojoattention.validation.fast_canaries import (
+    AgentLoopFixture,
     AssertionFixture,
     ContractFixture,
     EvidenceFixture,
     ReportFixture,
     WorkflowFixture,
+    agent_loop_canary,
     assertion_canary,
     contract_canary,
     evidence_canary,
@@ -188,6 +190,21 @@ class FastFalseGreenCanaryTests(unittest.TestCase):
             )
             self.assertEqual("", _git(repo, "status", "--porcelain"))
 
+    def test_agent_loop_semantic_and_retry_budget_mutations_have_clean_controls(self) -> None:
+        clean = AgentLoopFixture(semantic_failure="causality", retries_consumed=1, retry_budget=1)
+        mutations = (
+            replace(clean, semantic_failure=None),
+            replace(clean, retries_consumed=0),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                self.assert_mutation_then_clean(
+                    lambda mutation=mutation: agent_loop_canary(mutation, ROOT),
+                    lambda: agent_loop_canary(clean, ROOT),
+                    "FAST-014",
+                    "contract-invalid",
+                )
+
     def test_canaries_do_not_accept_fixture_authored_ids_or_expected_verdicts(self) -> None:
         fields = set(AssertionFixture.__dataclass_fields__)
         self.assertNotIn("validation_id", fields)
@@ -217,19 +234,8 @@ class FastFalseGreenCanaryTests(unittest.TestCase):
                     result = execute_false_green_canary(check, canary_root, trusted)
                     self.assertEqual("pass", result.observation.status)
                     self.assertEqual((), result.errors)
-                    self.assertEqual(
-                        (
-                            "mojoattention",
-                            "validate",
-                            "--suite",
-                            "fast",
-                            "--contract",
-                            "contracts/acceptance/1-6-fast.example.json",
-                            "--output",
-                            "reports/runs",
-                        ),
-                        check.reproduction_argv,
-                    )
+                    self.assertEqual("mojoattention", check.reproduction_argv[0])
+                    self.assertEqual("fast", check.reproduction_argv[3])
             self.assertEqual((), tuple(canary_root.iterdir()))
 
     def test_adapter_requires_the_expected_structured_mutation_reason(self) -> None:

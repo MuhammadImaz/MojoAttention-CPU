@@ -1,10 +1,10 @@
 {
   "schema_version": "1.0.0",
   "suite_id": "fast",
-  "manifest_digest": "sha256:2e5aefd8967683a1246d730d3238629ac9f7902d3b5006ea1a3338a3cc5983e3",
+  "manifest_digest": "sha256:33bc85b47ddc5197b883ffb74d13014c4f943699eac32172d3aef759d4dbdd4f",
   "config_digest": "sha256:98d031cee33f22c697a7d30eb0dd7ebbbd125a3c60d2c7cff4302a3ffe861863",
   "seed": 1601,
-  "required_total": 13,
+  "required_total": 14,
   "reference_target_ns": 180000000000,
   "runner_config": {
     "timeout_seconds": 170,
@@ -139,6 +139,15 @@
       "required_count": 1,
       "expected_verdict": "contract-invalid",
       "reproduction_argv": ["mojoattention", "validate", "--suite", "fast", "--contract", "contracts/acceptance/1-6-fast.example.json", "--output", "reports/runs"]
+    },
+    {
+      "validation_id": "FAST-014",
+      "case_id": "agent-loop-policy-canary",
+      "kind": "canary",
+      "seed": 1601,
+      "required_count": 1,
+      "expected_verdict": "contract-invalid",
+      "reproduction_argv": ["mojoattention", "validate", "--suite", "fast", "--contract", "contracts/acceptance/1-7-agent-loop.example.json", "--output", "reports/runs"]
     }
   ]
 }

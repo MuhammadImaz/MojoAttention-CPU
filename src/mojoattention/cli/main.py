@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,23 @@ from typing import Any, NoReturn
 
 from mojoattention.config import ProjectPolicy
 from mojoattention.validation.acceptance import ContractContext, ContractError, validate_contract
+from mojoattention.validation.agent_loop import (
+    SEMANTIC_STOP_FAILURES,
+    AgentLoopContractError,
+    AgentLoopJournal,
+    AuthenticatedLoopControls,
+    ControlAcquisitionRequest,
+    Diagnosis,
+    EvidenceObservation,
+    Improvement,
+    LoopState,
+    RepairRequest,
+    ValidationObservation,
+    admit_completed_evidence,
+    authenticate_loop_controls,
+    evaluate_post_repair,
+    evaluate_retry,
+)
 from mojoattention.validation.authority import authorize_read, validate_manifest
 from mojoattention.validation.evidence import EXIT_CODES as EVIDENCE_EXIT_CODES
 from mojoattention.validation.evidence import (
@@ -37,7 +55,7 @@ from mojoattention.validation.fast import (
 )
 from mojoattention.validation.fast_canaries import execute_false_green_canary
 from mojoattention.validation.host import probe
-from mojoattention.validation.identity import detect_identity, evaluate_identity
+from mojoattention.validation.identity import detect_identity, evaluate_identity, require_clean_candidate
 from mojoattention.validation.paths import contains
 from mojoattention.validation.preflight import evaluate, render_json
 from mojoattention.validation.privacy import find_forbidden_tracked_paths, tracked_paths
@@ -580,31 +598,336 @@ def run_fast_validation(
 
 
 def _require_candidate_checkout(root: Path, revision: str) -> None:
-    environment = {
-        "PATH": os.environ.get("PATH", ""),
-        "GIT_CONFIG_NOSYSTEM": "1",
-        "GIT_CONFIG_GLOBAL": os.devnull,
-        "GIT_NO_REPLACE_OBJECTS": "1",
-        "LC_ALL": "C",
+    require_clean_candidate(root, revision)
+
+
+def _load_agent_loop_controls(
+    root: Path,
+    args: argparse.Namespace,
+) -> tuple[AuthenticatedLoopControls, bytes, dict[str, Any]]:
+    contract = json.loads(_read_protected_caller_bytes(root, args.contract))
+    trusted_base = json.loads(_read_protected_caller_bytes(root, args.trusted_base))
+    if not isinstance(contract, dict) or not isinstance(trusted_base, dict):
+        raise ValueError("agent loop control inputs must be objects")
+    candidate_revision = str(contract.get("source_revision", ""))
+    trusted_base_revision = str(contract.get("trusted_base_revision", ""))
+    if trusted_base.get("trusted_base_revision") != trusted_base_revision:
+        raise ValueError("authenticated trusted base conflicts with contract")
+    policy = TrustedPolicyInput(
+        _read_protected_caller_bytes(root, args.trusted_policy),
+        _read_protected_caller_bytes(root, args.trusted_policy_schema),
+        str(trusted_base["trusted_policy_identity"]),
+        str(trusted_base["trusted_policy_digest"]),
+        str(trusted_base["trusted_policy_schema_digest"]),
+    )
+    envelope, authorization_errors = load_trusted_authorization(
+        _read_protected_caller_bytes(root, args.authorization),
+        _read_protected_caller_bytes(root, args.trusted_authorization_schema),
+    )
+    if authorization_errors or envelope is None:
+        raise ValueError("protected authorization is invalid")
+    authorization = AuthorizationContext(
+        envelope,
+        args.approval_anchor_revision,
+        str(contract.get("contract_digest", "")),
+    )
+    authority_schema = _candidate_blob(root, candidate_revision, "schemas/agent-authority.schema.json")
+    authority = json.loads(_candidate_blob(root, candidate_revision, "contracts/agent-authority.json"))
+    acceptance_schema = _candidate_blob(root, candidate_revision, "schemas/acceptance-contract.schema.json")
+    evidence_schema = _candidate_blob(root, candidate_revision, "schemas/validation-evidence.schema.json")
+    if not isinstance(authority, dict):
+        raise ValueError("candidate authority manifest is invalid")
+    suites = contract.get("required_suites")
+    if not isinstance(suites, list) or len(suites) != 1 or not isinstance(suites[0], dict):
+        raise ValueError("agent loop requires one suite")
+    validations = suites[0].get("validations")
+    if not isinstance(validations, list) or not validations:
+        raise ValueError("agent loop validation inventory is invalid")
+    validation_ids = [str(item["validation_id"]) for item in validations]
+    bounded_context: dict[str, Any] = {
+        "suite_id": str(suites[0]["suite_id"]),
+        "contract_digest": str(contract["contract_digest"]),
+        "config_digest": str(contract["config_digest"]),
+        "protocol_digest": str(contract["protocol_digest"]),
+        "declared_case_ids": validation_ids,
+        "declared_validation_ids": validation_ids,
+        "seed": int(contract.get("seed") or 0),
+        "producer": {"name": "mojoattention-agent-loop", "version": "1.0.0"},
+        "environment": {
+            "os": sys.platform.replace("_", "-"),
+            "architecture": os.uname().machine.replace("_", "-"),
+            "python_version": ".".join(str(item) for item in sys.version_info[:3]),
+            "reference_host": "unverified",
+        },
     }
-    head = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=root,
-        capture_output=True,
-        check=False,
-        text=True,
-        env=environment,
+    if contract.get("suite_manifest_digest") is not None:
+        bounded_context["suite_manifest_digest"] = str(contract["suite_manifest_digest"])
+    controls = authenticate_loop_controls(
+        root,
+        ControlAcquisitionRequest(
+            contract=contract,
+            contract_schema=acceptance_schema,
+            contract_context=ContractContext(
+                source_revision=candidate_revision,
+                trusted_base_revision=trusted_base_revision,
+                prior_validation_identity=contract.get("prior_validation_identity"),
+                approval_anchor_revision=args.approval_anchor_revision,
+                authorization=envelope,
+            ),
+            authority_manifest=authority,
+            authority_schema=authority_schema,
+            evidence_schema=evidence_schema,
+            assigned_role=args.role,
+            trusted_base_revision=trusted_base_revision,
+            candidate_revision=candidate_revision,
+            trusted_policy=policy,
+            authorization=authorization,
+            bounded_context=bounded_context,
+            control_source_kind="protected-caller",
+        ),
     )
-    dirty = subprocess.run(
-        ["git", "status", "--porcelain=v1", "--untracked-files=no"],
-        cwd=root,
-        capture_output=True,
-        check=False,
-        text=True,
-        env=environment,
+    if controls.trusted_base_tree != trusted_base.get("trusted_base_tree"):
+        raise ValueError("authenticated trusted-base tree conflicts with Git")
+    loop_schema = _read_protected_caller_bytes(root, args.trusted_loop_schema)
+    return controls, loop_schema, authority
+
+
+def _loop_control_binding(controls: AuthenticatedLoopControls) -> dict[str, object]:
+    return {
+        "contract_digest": controls.contract_digest,
+        "source_revision": controls.source_revision,
+        "source_tree": controls.source_tree,
+        "trusted_base_revision": controls.trusted_base_revision,
+        "trusted_base_tree": controls.trusted_base_tree,
+        "assigned_role": controls.assigned_role,
+        "allowed_paths": list(controls.allowed_paths),
+        "protected_paths": list(controls.protected_paths),
+    }
+
+
+def run_agent_loop_start(root: Path, args: argparse.Namespace) -> LoopState:
+    controls, loop_schema, _authority = _load_agent_loop_controls(root, args)
+    return AgentLoopJournal(root, loop_schema).start(
+        {
+            "schema_version": "1.0.0",
+            **_loop_control_binding(controls),
+            "retry_budget": controls.retry_budget,
+            "created_at": args.timestamp,
+        }
     )
-    if head.returncode != 0 or head.stdout.strip() != revision or dirty.returncode != 0 or dirty.stdout:
-        raise ValueError("candidate checkout identity or tracked cleanliness is invalid")
+
+
+def run_agent_loop_inspect(root: Path, args: argparse.Namespace) -> LoopState:
+    loop_schema = _read_protected_caller_bytes(root, args.trusted_loop_schema)
+    return AgentLoopJournal(root, loop_schema).inspect(args.loop_id)
+
+
+def _repair_request(payload: dict[str, Any]) -> RepairRequest:
+    diagnosis = payload["diagnosis"]
+    improvement = payload["improvement"]
+    metric = improvement["metric"]
+
+    def observations(field: str) -> tuple[ValidationObservation, ...]:
+        return tuple(
+            ValidationObservation(
+                item["validation_id"],
+                item["case_id"],
+                item["config_digest"],
+                item["status"],
+                item.get("metric_name"),
+                item.get("direction"),
+                item.get("value"),
+            )
+            for item in payload[field]
+        )
+
+    return RepairRequest(
+        diagnosis=Diagnosis(
+            diagnosis["validation_id"],
+            diagnosis["verdict"],
+            diagnosis["error_code"],
+            diagnosis["failure_signature"],
+            diagnosis["evidence_digest"],
+            tuple(diagnosis["affected_paths"]),
+            tuple(diagnosis["reproduction_argv"]),
+        ),
+        improvement=Improvement(
+            improvement["validation_id"],
+            improvement["case_id"],
+            improvement["config_digest"],
+            metric["name"],
+            metric["direction"],
+            metric["before"],
+            metric["after"],
+        ),
+        repair_paths=tuple(payload["repair_paths"]),
+        previous_observations=observations("previous_observations"),
+        current_observations=observations("current_observations"),
+        operation=payload["operation"],
+        actor_kind=payload["actor_kind"],
+        requests_approval=payload["requests_approval"],
+        infrastructure_identity_before=payload.get("infrastructure_identity_before"),
+        infrastructure_identity_after=payload.get("infrastructure_identity_after"),
+        semantic_state_before=payload.get("semantic_state_before"),
+        semantic_state_after=payload.get("semantic_state_after"),
+        previous_failure_signatures=tuple(payload.get("previous_failure_signatures", ())),
+        failure_kind=payload.get("failure_kind"),
+    )
+
+
+def run_agent_loop_evaluate(root: Path, args: argparse.Namespace) -> tuple[LoopState, str]:
+    controls, loop_schema, authority = _load_agent_loop_controls(root, args)
+    journal = AgentLoopJournal(root, loop_schema)
+    state = journal.inspect(args.loop_id)
+    event = json.loads(_read_protected_caller_bytes(root, args.event))
+    if not isinstance(event, dict):
+        raise ValueError("agent loop event input must be an object")
+    if args.evidence is not None:
+        evidence_path = Path(args.evidence)
+        verified = verify_evidence(evidence_path, controls.evidence_schema)
+        if verified.errors or verified.manifest is None:
+            raise ValueError("agent loop evidence is invalid")
+        manifest = verified.manifest
+        validations = manifest["validations"]
+        observation_records = [
+            {
+                "validation_id": item["validation_id"],
+                "case_id": item["case_id"],
+                "config_digest": manifest["config_digest"],
+                "status": item["status"],
+                "metrics": [
+                    {"name": metric["name"], "value": metric["value"]}
+                    for metric in item["metrics"]
+                    if metric["value_type"] == "integer"
+                ],
+            }
+            for item in validations
+        ]
+        event["validation_observations"] = observation_records
+        selected = next(
+            (item for item in validations if item["status"] == "fail"),
+            validations[0],
+        )
+        normalized_errors = []
+        for item in selected["errors"]:
+            code = item["code"] if re.fullmatch(r"LOOP-[0-9]{3}", item["code"]) else "LOOP-101"
+            context = dict(item["context"])
+            context["source_error_code"] = item["code"]
+            normalized_errors.append({"code": code, "message": item["message"], "context": context})
+        event["validation_binding"] = {
+            "validation_id": selected["validation_id"],
+            "status": selected["status"] if manifest["verdict"] in {"pass", "product-fail"} else "invalid",
+            "errors": normalized_errors
+            or (
+                []
+                if selected["status"] == "pass"
+                else [
+                    {
+                        "code": "LOOP-101",
+                        "message": "validation failed",
+                        "context": {},
+                    }
+                ]
+            ),
+        }
+        event["actor_kind"] = "validator"
+        binding = admit_completed_evidence(root, state, controls, evidence_path)
+        event["evidence_bindings"] = [asdict(binding)]
+        verdict = binding.verdict
+        if verdict == "pass":
+            event["transition"] = "awaiting-human-review"
+            event["status"] = "awaiting-human-review"
+        elif verdict == "product-fail":
+            failure_kinds = tuple(
+                str(error["context"]["failure_kind"])
+                for item in validations
+                for error in item["errors"]
+                if isinstance(error["context"].get("failure_kind"), str)
+            )
+            observations = tuple(
+                EvidenceObservation(
+                    item["validation_id"],
+                    item["case_id"],
+                    item["config_digest"],
+                    item["status"],
+                    tuple((metric["name"], metric["value"]) for metric in item["metrics"]),
+                )
+                for item in observation_records
+            )
+            post_repair_stop = (
+                evaluate_post_repair(state, observations, failure_kinds) if state.status == "retry-authorized" else None
+            )
+            event["transition"] = "stopped" if post_repair_stop is not None else "validation-recorded"
+            event["status"] = "stopped" if post_repair_stop is not None else "validation-failed"
+            event["stop_reason"] = post_repair_stop
+        else:
+            event["transition"] = "stopped"
+            event["status"] = "stopped"
+            event["stop_reason"] = "human-escalation"
+    elif event.get("transition") == "retry-authorized":
+        event["validation_observations"] = []
+        request_payload = event.pop("repair_request")
+        if not isinstance(request_payload, dict):
+            raise ValueError("repair request must be an object")
+        request = _repair_request(request_payload)
+        decision = evaluate_retry(state, request, authority, root)
+        if decision.allowed:
+            verdict = "product-fail"
+            event["status"] = "retry-authorized"
+            event["diagnosis"] = asdict(request.diagnosis)
+            event["improvement_proof"] = asdict(request.improvement)
+            event["actor_kind"] = "agent"
+        else:
+            verdict = "product-fail"
+            event["transition"] = "stopped"
+            event["status"] = "stopped"
+            event["stop_reason"] = decision.stop_reason
+    else:
+        event["validation_observations"] = []
+        verdict = "product-fail"
+        if event.get("transition") != "stopped":
+            raise ValueError("evaluation without evidence must record a typed stop")
+    event["control_binding"] = _loop_control_binding(controls)
+    return journal.append(args.loop_id, event), verdict
+
+
+def _agent_loop_payload(state: LoopState, verdict: str) -> dict[str, object]:
+    next_actions = {
+        "awaiting-validation": "record-validation",
+        "validation-failed": "evaluate-repair",
+        "retry-authorized": "perform-authorized-repair",
+        "awaiting-human-review": "human-review",
+        "stopped": "start-new-approved-loop",
+    }
+    return {
+        "attempt": state.attempt,
+        "errors": [asdict(error) for error in state.errors],
+        "loop_id": state.header.loop_id,
+        "next_action": next_actions[state.status],
+        "retries_consumed": state.retries_consumed,
+        "status": state.status,
+        "terminal": state.terminal,
+        "verdict": verdict,
+    }
+
+
+def _agent_loop_state_verdict(state: LoopState) -> str:
+    if state.status == "stopped":
+        reason = state.events[-1].stop_reason
+        return (
+            "product-fail"
+            if reason in SEMANTIC_STOP_FAILURES
+            or reason
+            in {
+                "non-improving-retry",
+                "retry-budget-exhausted",
+            }
+            else "contract-invalid"
+        )
+    for event in reversed(state.events):
+        if event.evidence_bindings:
+            return event.evidence_bindings[-1].verdict
+    return "product-fail" if state.status in {"validation-failed", "stopped"} else "pass"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -680,11 +1003,86 @@ def build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--trusted-authorization-schema", required=True, metavar="PATH")
     validate.add_argument("--approval-anchor-revision", required=True, metavar="SHA")
     validate.add_argument("--output", default="reports/runs", metavar="PATH")
+    agent_loop = commands.add_parser("agent-loop")
+    agent_loop_commands = agent_loop.add_subparsers(
+        dest="agent_loop_command",
+        required=True,
+        parser_class=ProjectArgumentParser,
+    )
+
+    def add_loop_trust_inputs(command: argparse.ArgumentParser) -> None:
+        command.add_argument("--contract", required=True, metavar="PATH")
+        command.add_argument("--trusted-base", required=True, metavar="PATH")
+        command.add_argument("--trusted-policy", required=True, metavar="PATH")
+        command.add_argument("--trusted-policy-schema", required=True, metavar="PATH")
+        command.add_argument("--authorization", required=True, metavar="PATH")
+        command.add_argument("--trusted-authorization-schema", required=True, metavar="PATH")
+        command.add_argument("--approval-anchor-revision", required=True, metavar="SHA")
+        command.add_argument("--trusted-loop-schema", required=True, metavar="PATH")
+        command.add_argument("--role", required=True, metavar="ROLE")
+
+    loop_start = agent_loop_commands.add_parser("start")
+    add_loop_trust_inputs(loop_start)
+    loop_start.add_argument("--timestamp", required=True, metavar="UTC")
+    loop_evaluate = agent_loop_commands.add_parser("evaluate")
+    add_loop_trust_inputs(loop_evaluate)
+    loop_evaluate.add_argument("--loop-id", required=True, metavar="ID")
+    loop_evaluate.add_argument("--event", required=True, metavar="PATH")
+    loop_evaluate.add_argument("--evidence", metavar="PATH")
+    loop_inspect = agent_loop_commands.add_parser("inspect")
+    loop_inspect.add_argument("--loop-id", required=True, metavar="ID")
+    loop_inspect.add_argument("--trusted-loop-schema", required=True, metavar="PATH")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "agent-loop":
+        verdict = "pass"
+        try:
+            root = _root()
+            if args.agent_loop_command == "start":
+                loop_state = run_agent_loop_start(root, args)
+            elif args.agent_loop_command == "inspect":
+                loop_state = run_agent_loop_inspect(root, args)
+                verdict = _agent_loop_state_verdict(loop_state)
+            else:
+                loop_state, verdict = run_agent_loop_evaluate(root, args)
+            loop_payload = _agent_loop_payload(loop_state, verdict)
+            exit_code = EVIDENCE_EXIT_CODES[verdict]
+        except KeyError, TypeError, json.JSONDecodeError, AgentLoopContractError, ValueError:
+            verdict = "contract-invalid"
+            loop_payload = {
+                "errors": [
+                    {
+                        "code": "LOOP-CLI-001",
+                        "message": "Agent Loop structured inputs or transition are invalid",
+                        "context": {"command": args.agent_loop_command},
+                    }
+                ],
+                "non_evidence": True,
+                "verdict": verdict,
+            }
+            print(f"LOOP-CLI-001 {verdict}: Agent Loop request rejected", file=sys.stderr)
+            exit_code = EVIDENCE_EXIT_CODES[verdict]
+        except OSError, RuntimeError:
+            verdict = "infrastructure-invalid"
+            loop_payload = {
+                "errors": [
+                    {
+                        "code": "LOOP-CLI-002",
+                        "message": "Agent Loop storage or authenticated controls are unavailable",
+                        "context": {"command": args.agent_loop_command},
+                    }
+                ],
+                "non_evidence": True,
+                "verdict": verdict,
+            }
+            print(f"LOOP-CLI-002 {verdict}: Agent Loop operation failed", file=sys.stderr)
+            exit_code = EVIDENCE_EXIT_CODES[verdict]
+        if not _write_payload(canonical_bytes(loop_payload, newline=True).decode(), "-"):
+            return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+        return exit_code
     if args.command == "validate":
         fast_payload: dict[str, Any]
         if args.output != "reports/runs":

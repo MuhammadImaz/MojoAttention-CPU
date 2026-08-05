@@ -47,6 +47,7 @@ class PrivacyPolicyTests(unittest.TestCase):
     def test_git_ignore_effective_patterns(self) -> None:
         candidates = (
             b".agents/private.md\0.codex/config.toml\0_bmad-output/story.md\0AGENTS.md\0.gemini/settings.json\0"
+            b"reports/agent-loops/example/header.json\0"
         )
         completed = subprocess.run(
             ["git", "check-ignore", "--stdin", "-z"], cwd=ROOT, input=candidates, capture_output=True, check=False

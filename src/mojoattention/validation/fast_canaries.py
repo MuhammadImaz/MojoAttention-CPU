@@ -7,11 +7,25 @@ import subprocess
 import sys
 import tempfile
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
 from mojoattention.validation.acceptance import ContractContext, issue_contract, validate_contract
+from mojoattention.validation.agent_loop import (
+    AgentLoopError,
+    ControlBinding,
+    Diagnosis,
+    EvidenceBinding,
+    EvidenceObservation,
+    Improvement,
+    LoopEvent,
+    LoopHeader,
+    LoopState,
+    RepairRequest,
+    ValidationObservation,
+    evaluate_retry,
+)
 from mojoattention.validation.evidence import EvidenceWriter, verify_evidence
 from mojoattention.validation.fast import (
     AdapterResult,
@@ -39,6 +53,7 @@ _EXPECTED_REASONS = {
     "FAST-011": "FAST-CANARY-EVIDENCE",
     "FAST-012": "FAST-CANARY-CONTRACT",
     "FAST-013": "FAST-CANARY-PROTECTED",
+    "FAST-014": "FAST-CANARY-AGENT-LOOP",
 }
 
 
@@ -96,6 +111,13 @@ class ContractFixture:
     observed_ids: tuple[str, ...]
     expected_counts: tuple[int, ...]
     observed_counts: tuple[int, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class AgentLoopFixture:
+    semantic_failure: str | None
+    retries_consumed: int
+    retry_budget: int
 
 
 def _outcome(
@@ -198,6 +220,146 @@ def contract_canary(fixture: ContractFixture) -> CanaryOutcome:
         and all(count == 1 for count in fixture.observed_counts)
     )
     return _outcome("FAST-012", valid, "contract-invalid", "FAST-CANARY-CONTRACT")
+
+
+def agent_loop_canary(fixture: AgentLoopFixture, root: Path) -> CanaryOutcome:
+    """Exercise production retry policy for semantic and retry-budget stops."""
+
+    digest = "sha256:" + "1" * 64
+    evidence = EvidenceBinding(
+        "run-fast-014",
+        digest,
+        "1" * 40,
+        "2" * 40,
+        digest,
+        "complete",
+        True,
+        "product-fail",
+        ("FAST-014",),
+    )
+    controls = ControlBinding(
+        digest,
+        "1" * 40,
+        "2" * 40,
+        "3" * 40,
+        "4" * 40,
+        "implementer",
+        ("src/mojoattention/validation",),
+        ("schemas", "contracts"),
+    )
+    header = LoopHeader(
+        "1.0.0",
+        "loop-fast-014",
+        digest,
+        "1" * 40,
+        "2" * 40,
+        "3" * 40,
+        "4" * 40,
+        "implementer",
+        fixture.retry_budget,
+        controls.allowed_paths,
+        controls.protected_paths,
+        "2026-07-29T00:00:00Z",
+        digest,
+    )
+    event = LoopEvent(
+        "1.0.0",
+        header.loop_id,
+        2,
+        digest,
+        digest,
+        1,
+        "validation-recorded",
+        "validation-failed",
+        controls,
+        "FAST-014",
+        (evidence,),
+        None,
+        None,
+        None,
+        "validator",
+        "2026-07-29T00:00:01Z",
+        validation_errors=(
+            AgentLoopError(
+                "LOOP-101",
+                "canary failure",
+                {
+                    **({"failure_kind": fixture.semantic_failure} if fixture.semantic_failure is not None else {}),
+                    "affected_paths": ["src/mojoattention/validation/agent_loop.py"],
+                },
+            ),
+        ),
+        validation_observations=(
+            EvidenceObservation(
+                "FAST-014",
+                "agent-loop-policy-canary",
+                digest,
+                "fail",
+                (("failures", 2),),
+            ),
+        ),
+    )
+    state = LoopState(
+        header,
+        (event,),
+        "validation-failed",
+        1,
+        fixture.retries_consumed,
+        "FAST-014",
+        evidence.run_id,
+        False,
+    )
+    observation_before = ValidationObservation(
+        "FAST-014", "agent-loop-policy-canary", digest, "fail", "failures", "decrease", 2
+    )
+    observation_after = ValidationObservation(
+        "FAST-014", "agent-loop-policy-canary", digest, "fail", "failures", "decrease", 1
+    )
+    request = RepairRequest(
+        Diagnosis(
+            "FAST-014",
+            "product-fail",
+            "FAST-014",
+            digest,
+            evidence.evidence_digest,
+            ("src/mojoattention/validation/agent_loop.py",),
+            ("python", "-m", "pytest", "-q", "tests/foundation/test_agent_loop.py"),
+        ),
+        Improvement("FAST-014", "agent-loop-policy-canary", digest, "failures", "decrease", 2, 1),
+        ("src/mojoattention/validation/agent_loop.py",),
+        (observation_before,),
+        (observation_after,),
+        "modify",
+        "agent",
+        False,
+        None,
+        None,
+        None,
+        None,
+        failure_kind=fixture.semantic_failure,
+    )
+    authority = {
+        "protected_paths": ["schemas", "contracts"],
+        "roles": [
+            {
+                "id": "implementer",
+                "read_paths": ["src"],
+                "write_paths": ["src/mojoattention/validation"],
+                "indirect_output_paths": [],
+                "can_approve_protected_changes": False,
+                "can_approve_final_merge": False,
+            }
+        ],
+    }
+    semantic = evaluate_retry(replace(state, retries_consumed=0), request, authority, root)
+    exhausted = evaluate_retry(state, replace(request, failure_kind=None), authority, root)
+    valid = (
+        semantic.allowed is False
+        and semantic.stop_reason == "causality"
+        and exhausted.allowed is False
+        and exhausted.stop_reason == "retry-budget-exhausted"
+    )
+    return _outcome("FAST-014", valid, "contract-invalid", "FAST-CANARY-AGENT-LOOP")
 
 
 def protected_change_canary(
@@ -450,6 +612,10 @@ def _canary_pair(
         "FAST-011": _evidence_pair,
         "FAST-012": _contract_pair,
     }
+    if check.validation_id == "FAST-014":
+        clean = AgentLoopFixture("causality", 1, 1)
+        mutation = AgentLoopFixture(None, 0, 1)
+        return agent_loop_canary(mutation, PROJECT_ROOT), agent_loop_canary(clean, PROJECT_ROOT)
     if check.validation_id == "FAST-013":
         return _protected_pair(root, trusted_policy)
     if check.validation_id == "FAST-010":

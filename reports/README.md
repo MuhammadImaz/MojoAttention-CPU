@@ -2,6 +2,10 @@
 
 Generated runs are ignored. Curated release evidence must be added explicitly.
 
+Agent Loop journals are generated only below `reports/agent-loops` by the
+`agent-loop-producer` role. The root is ignored, has one indirect-output writer,
+and grants no protected-change approval or final-merge authority.
+
 Fast writes only below the repository-relative `reports/runs` root and chooses
 the child run identity internally. Inspect a published closure with
 `scripts/run.sh mojoattention evidence inspect --run
