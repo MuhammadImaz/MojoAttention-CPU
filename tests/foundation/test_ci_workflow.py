@@ -14,6 +14,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         ordered = [
             "name: Resolve immutable event identity",
             "name: Check out authenticated trusted base",
+            "name: Finalize immutable trusted base identity",
             "name: Acquire trusted validator and controls",
             "name: Validate trusted policy and candidate authorization",
             "name: Check out exact candidate",
@@ -82,7 +83,10 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("name: Foundation Quality", text)
         self.assertIn("pull_request:", text)
         self.assertIn("push:", text)
-        self.assertEqual(2, text.count("branches: [main]"))
+        self.assertEqual(1, text.count("branches: [main]"))
+        self.assertIn("github.event.repository.default_branch", text)
+        self.assertIn("steps.event_identity.outputs.trusted_ref", text)
+        self.assertIn("Finalize immutable trusted base identity", text)
         self.assertNotIn("pull_request_target", text)
         self.assertNotIn("paths:", text)
         self.assertIn("contents: read", text)

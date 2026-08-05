@@ -2,7 +2,6 @@ name: Foundation Quality
 
 on:
   push:
-    branches: [main]
   pull_request:
     branches: [main]
 
@@ -28,9 +27,10 @@ jobs:
       UV_INDEX: https://modular.gateway.scarf.sh/simple/ https://download.pytorch.org/whl/cpu
     steps:
       - name: Resolve immutable event identity
-        id: identity
+        id: event_identity
         env:
           EVENT_NAME: ${{ github.event_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
           PR_HEAD: ${{ github.event.pull_request.head.sha }}
           PUSH_BASE: ${{ github.event.before }}
@@ -53,18 +53,31 @@ jobs:
             exit 3
           fi
           if [[ "${trusted_base}" == '0000000000000000000000000000000000000000' ]]; then
-            echo 'contract-invalid: trusted base is unavailable' >&2
-            exit 3
+            [[ "${EVENT_NAME}" == "push" && "${DEFAULT_BRANCH}" =~ ^[A-Za-z0-9._/-]+$ ]] || { echo 'contract-invalid: trusted default branch is unavailable' >&2; exit 3; }
+            trusted_ref="${DEFAULT_BRANCH}"
+          else
+            trusted_ref="${trusted_base}"
           fi
-          printf 'trusted_base=%s\ncandidate_head=%s\n' "${trusted_base}" "${candidate_head}" >>"${GITHUB_OUTPUT}"
+          printf 'trusted_ref=%s\ncandidate_head=%s\n' "${trusted_ref}" "${candidate_head}" >>"${GITHUB_OUTPUT}"
 
       - name: Check out authenticated trusted base
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ steps.identity.outputs.trusted_base }}
+          ref: ${{ steps.event_identity.outputs.trusted_ref }}
           path: .trusted/base
           persist-credentials: false
           fetch-depth: 0
+
+      - name: Finalize immutable trusted base identity
+        id: identity
+        env:
+          CANDIDATE_HEAD: ${{ steps.event_identity.outputs.candidate_head }}
+        run: |
+          set -euo pipefail
+          trusted_base="$(git -C "${GITHUB_WORKSPACE}/.trusted/base" rev-parse HEAD)"
+          sha_pattern='^[0-9a-f]{40}$'
+          [[ "${trusted_base}" =~ ${sha_pattern} ]] || { echo 'contract-invalid: authenticated trusted base is not commit-bound' >&2; exit 3; }
+          printf 'trusted_base=%s\ncandidate_head=%s\n' "${trusted_base}" "${CANDIDATE_HEAD}" >>"${GITHUB_OUTPUT}"
 
       - name: Set up exact Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
