@@ -21,6 +21,10 @@ attachment closure and canonical root are flushed and reverified does one atomic
 no-replace rename publish `<run-id>.complete`.
 
 Only canonical, schema-valid, hash-closed `.complete` directories are evidence.
+Foundation CI uploads exactly one independently verified `.complete` directory
+whose artifact name binds run ID, attempt, and full source revision. Upload
+retention and success do not prove governance activation; the v3 manifest's
+authenticated governance binding and evidence digest remain authoritative.
 JSON is authoritative and `report.md` is its deterministic display projection.
 Completed output is append-forbidden by the API but tamper-detectable rather than
 filesystem-immutable; SHA-256 proves consistency, not author identity.

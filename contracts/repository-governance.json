@@ -1,0 +1,9 @@
+{
+  "schema_version":"1.0.0","state_kind":"configured-intent","repository":"MuhammadImaz/MojoAttention-CPU","default_branch":"main","api_version":"2026-03-10",
+  "required_checks":{"strict":true,"expected_source":"github-actions","registry":"contracts/required-checks.json"},
+  "pull_request_reviews":{"minimum_approvals":1,"codeowners_required":true,"dismiss_stale_reviews":true,"require_last_push_approval":true},
+  "bypass":{"administrators_enforced":true,"allowed_actors":[]},
+  "actions":{"full_commit_sha_pins_required":true,"default_permissions":"read"},
+  "dependency_automation":{"provider":"dependabot","configuration_path":".github/dependabot.yml","required_active":true},
+  "activation":{"human_admin_required":true,"repository_files_prove_activation":false,"missing_activation_outcome":"human-action-required"}
+}

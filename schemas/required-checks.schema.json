@@ -1,0 +1,26 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://example.invalid/mojoattention/required-checks.schema.json",
+  "type":"object","additionalProperties":false,
+  "required":["schema_version","registry_id","expected_source","tiers","invalid_infrastructure_outcome","reserved_tiers_are_passing_jobs"],
+  "properties":{
+    "schema_version":{"const":"1.0.0"},"registry_id":{"const":"mojoattention-required-checks"},
+    "expected_source":{"const":"github-actions"},
+    "tiers":{"type":"array","minItems":8,"maxItems":8,"uniqueItems":true,"prefixItems":[
+      {"$ref":"#/$defs/fast"},{"$ref":"#/$defs/correctness"},{"$ref":"#/$defs/model"},{"$ref":"#/$defs/training-smoke"},{"$ref":"#/$defs/benchmark-smoke"},{"$ref":"#/$defs/nightly"},{"$ref":"#/$defs/stable-benchmark"},{"$ref":"#/$defs/release"}],"items":false},
+    "invalid_infrastructure_outcome":{"const":"infrastructure-invalid"},"reserved_tiers_are_passing_jobs":{"const":false}
+  },
+  "$defs":{
+    "runner":{"type":"object","additionalProperties":false,"required":["class","minimum_memory_gib","minimum_logical_cpus","toolchain"],"properties":{"class":{"enum":["github-hosted-ubuntu-24.04","calibrated-larger-runner","calibrated-benchmark-runner","calibrated-release-runner"]},"minimum_memory_gib":{"type":"integer","minimum":1},"minimum_logical_cpus":{"type":"integer","minimum":1},"toolchain":{"type":"array","minItems":3,"uniqueItems":true,"items":{"type":"string","minLength":1}}}},
+    "artifact":{"type":"object","additionalProperties":false,"required":["name","retention_days"],"properties":{"name":{"type":"string","pattern":"^[a-z0-9]+(?:-[a-z0-9]+)*$"},"retention_days":{"type":"integer","minimum":1,"maximum":90}}},
+    "tier":{"type":"object","additionalProperties":false,"required":["tier_id","check_name","activation","runner","trigger_classes","artifact"],"properties":{"tier_id":{"type":"string"},"check_name":{"type":"string"},"activation":{"enum":["active","reserved"]},"runner":{"$ref":"#/$defs/runner"},"trigger_classes":{"type":"array","minItems":1,"uniqueItems":true,"items":{"enum":["pull-request","push-main","schedule","workflow-dispatch","release"]}},"artifact":{"$ref":"#/$defs/artifact"}}},
+    "fast":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"fast"},"check_name":{"const":"foundation-quality"},"activation":{"const":"active"}}}]},
+    "correctness":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"correctness"},"check_name":{"const":"correctness"},"activation":{"const":"reserved"}}}]},
+    "model":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"model"},"check_name":{"const":"model"},"activation":{"const":"reserved"}}}]},
+    "training-smoke":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"training-smoke"},"check_name":{"const":"training-smoke"},"activation":{"const":"reserved"}}}]},
+    "benchmark-smoke":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"benchmark-smoke"},"check_name":{"const":"benchmark-smoke"},"activation":{"const":"reserved"}}}]},
+    "nightly":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"nightly"},"check_name":{"const":"nightly"},"activation":{"const":"reserved"}}}]},
+    "stable-benchmark":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"stable-benchmark"},"check_name":{"const":"stable-benchmark"},"activation":{"const":"reserved"}}}]},
+    "release":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"release"},"check_name":{"const":"release"},"activation":{"const":"reserved"}}}]}
+  }
+}

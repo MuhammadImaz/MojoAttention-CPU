@@ -37,7 +37,7 @@
     "evidence_digest"
   ],
   "properties": {
-    "schema_version": {"enum": ["1.0.0", "2.0.0"]},
+    "schema_version": {"enum": ["1.0.0", "2.0.0", "3.0.0"]},
     "run_id": {"type": "string", "pattern": "^[0-9a-f]{32}$"},
     "suite_id": {"$ref": "#/$defs/id"},
     "source_revision": {"$ref": "#/$defs/revision"},
@@ -65,6 +65,8 @@
     },
     "contract_digest": {"$ref": "#/$defs/digest"},
     "suite_manifest_digest": {"$ref": "#/$defs/digest"},
+    "governance": {"$ref": "#/$defs/governance"},
+    "ci": {"$ref": "#/$defs/ci"},
     "config_digest": {"$ref": "#/$defs/digest"},
     "protocol_digest": {"$ref": "#/$defs/digest"},
     "declared_case_ids": {
@@ -110,9 +112,19 @@
   },
   "allOf": [
     {
-      "if": {"properties": {"schema_version": {"const": "2.0.0"}}},
+      "if": {"properties": {"schema_version": {"enum": ["2.0.0", "3.0.0"]}}},
       "then": {"required": ["suite_manifest_digest"]},
       "else": {"not": {"required": ["suite_manifest_digest"]}}
+    },
+    {
+      "if": {"properties": {"schema_version": {"const": "3.0.0"}}},
+      "then": {"required": ["governance", "ci"]},
+      "else": {
+        "allOf": [
+          {"not": {"required": ["governance"]}},
+          {"not": {"required": ["ci"]}}
+        ]
+      }
     },
     {
       "if": {
@@ -198,6 +210,106 @@
         "architecture": {"$ref": "#/$defs/id"},
         "python_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
         "reference_host": {"enum": ["unverified", "documented-reference"]}
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "intent_digest",
+        "observation_digest",
+        "observation_source",
+        "observed_at",
+        "api_version",
+        "audit_verdict",
+        "audit_valid",
+        "operationally_compliant",
+        "human_actions"
+      ],
+      "properties": {
+        "intent_digest": {"$ref": "#/$defs/digest"},
+        "observation_digest": {"$ref": "#/$defs/digest"},
+        "observation_source": {"enum": ["github-rest-api", "authenticated-export"]},
+        "observed_at": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,6})?Z$"
+        },
+        "api_version": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
+        "audit_verdict": {
+          "enum": ["pass", "product-fail", "infrastructure-invalid", "contract-invalid"]
+        },
+        "audit_valid": {"type": "boolean"},
+        "operationally_compliant": {"type": "boolean"},
+        "human_actions": {
+          "type": "array",
+          "maxItems": 128,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/safe_text"}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"audit_verdict": {"const": "pass"}}},
+          "then": {
+            "properties": {
+              "audit_valid": {"const": true},
+              "operationally_compliant": {"const": true},
+              "human_actions": {"maxItems": 0}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"audit_verdict": {"const": "product-fail"}}},
+          "then": {
+            "properties": {
+              "audit_valid": {"const": true},
+              "operationally_compliant": {"const": false},
+              "human_actions": {"minItems": 1}
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "audit_verdict": {"enum": ["infrastructure-invalid", "contract-invalid"]}
+            }
+          },
+          "then": {
+            "properties": {
+              "audit_valid": {"const": false},
+              "operationally_compliant": {"const": false}
+            }
+          }
+        }
+      ]
+    },
+    "ci": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "github_run_id",
+        "github_run_attempt",
+        "workflow_identity",
+        "workflow_revision",
+        "job_name",
+        "check_name",
+        "head_sha",
+        "base_sha",
+        "trusted_validator_revision"
+      ],
+      "properties": {
+        "github_run_id": {"type": "integer", "minimum": 1},
+        "github_run_attempt": {"type": "integer", "minimum": 1},
+        "workflow_identity": {
+          "type": "string",
+          "pattern": "^\\.github/workflows/[a-z0-9][a-z0-9-]*\\.ya?ml$"
+        },
+        "workflow_revision": {"$ref": "#/$defs/revision"},
+        "job_name": {"$ref": "#/$defs/id"},
+        "check_name": {"$ref": "#/$defs/id"},
+        "head_sha": {"$ref": "#/$defs/revision"},
+        "base_sha": {"$ref": "#/$defs/revision"},
+        "trusted_validator_revision": {"$ref": "#/$defs/revision"}
       }
     },
     "metric": {

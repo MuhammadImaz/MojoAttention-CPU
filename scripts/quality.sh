@@ -13,6 +13,7 @@ export UV_CACHE_DIR="${project_root}/.cache/uv"
 "${project_root}/.tools/uv/uv" --config-file uv.toml --project "${project_root}" lock --check
 "${project_root}/scripts/run.sh" mojoattention privacy --json -
 "${project_root}/scripts/run.sh" mojoattention authority --json -
+"${project_root}/scripts/run.sh" python scripts/validate_governance_contracts.py
 "${project_root}/scripts/run.sh" mojoattention contract validate \
   --contract contracts/acceptance/1-3.example.json \
   --source-revision 1111111111111111111111111111111111111111 \

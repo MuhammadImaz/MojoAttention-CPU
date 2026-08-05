@@ -1,0 +1,13 @@
+{
+  "schema_version": "1.0.0",
+  "suite_id": "foundation",
+  "manifest_digest": "sha256:0bf6fa9581963ac1f6736f2655987b9fa85711fff9e6d8fb0c5c60933289f58b",
+  "required_total": 5,
+  "validations": [
+    {"validation_id":"FOUND-001","case_id":"canonical-json","purpose":"canonical authoritative JSON"},
+    {"validation_id":"FOUND-002","case_id":"markdown-projection","purpose":"deterministic Markdown projection"},
+    {"validation_id":"FOUND-003","case_id":"attachment-closure","purpose":"complete attachment and inventory closure"},
+    {"validation_id":"FOUND-004","case_id":"governance-binding","purpose":"governance intent observation and audit binding"},
+    {"validation_id":"FOUND-005","case_id":"github-run-identity","purpose":"GitHub run workflow check and revision binding"}
+  ]
+}

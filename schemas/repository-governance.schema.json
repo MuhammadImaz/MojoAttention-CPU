@@ -1,0 +1,13 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://example.invalid/mojoattention/repository-governance.schema.json",
+  "type":"object","additionalProperties":false,"required":["schema_version","state_kind","repository","default_branch","api_version","required_checks","pull_request_reviews","bypass","actions","dependency_automation","activation"],
+  "properties":{
+    "schema_version":{"const":"1.0.0"},"state_kind":{"const":"configured-intent"},"repository":{"type":"string","pattern":"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"},"default_branch":{"type":"string","pattern":"^[A-Za-z0-9._/-]+$"},"api_version":{"const":"2026-03-10"},
+    "required_checks":{"type":"object","additionalProperties":false,"required":["strict","expected_source","registry"],"properties":{"strict":{"const":true},"expected_source":{"const":"github-actions"},"registry":{"const":"contracts/required-checks.json"}}},
+    "pull_request_reviews":{"type":"object","additionalProperties":false,"required":["minimum_approvals","codeowners_required","dismiss_stale_reviews","require_last_push_approval"],"properties":{"minimum_approvals":{"type":"integer","minimum":1},"codeowners_required":{"const":true},"dismiss_stale_reviews":{"const":true},"require_last_push_approval":{"const":true}}},
+    "bypass":{"type":"object","additionalProperties":false,"required":["administrators_enforced","allowed_actors"],"properties":{"administrators_enforced":{"const":true},"allowed_actors":{"type":"array","maxItems":0}}},
+    "actions":{"type":"object","additionalProperties":false,"required":["full_commit_sha_pins_required","default_permissions"],"properties":{"full_commit_sha_pins_required":{"const":true},"default_permissions":{"const":"read"}}},
+    "dependency_automation":{"type":"object","additionalProperties":false,"required":["provider","configuration_path","required_active"],"properties":{"provider":{"const":"dependabot"},"configuration_path":{"const":".github/dependabot.yml"},"required_active":{"const":true}}},
+    "activation":{"type":"object","additionalProperties":false,"required":["human_admin_required","repository_files_prove_activation","missing_activation_outcome"],"properties":{"human_admin_required":{"const":true},"repository_files_prove_activation":{"const":false},"missing_activation_outcome":{"const":"human-action-required"}}}
+  }
+}

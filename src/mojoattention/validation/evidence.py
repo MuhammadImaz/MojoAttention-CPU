@@ -321,10 +321,26 @@ def render_markdown(manifest: dict[str, Any], non_report: list[dict[str, object]
         f"- Verdict: `{manifest['verdict']}`",
         f"- Source: `{manifest['source_revision']}`",
         f"- Trusted base: `{manifest['trusted_base_revision']}`",
-        "",
-        "## Validations",
-        "",
     ]
+    if manifest["schema_version"] == "3.0.0":
+        ci = manifest["ci"]
+        governance = manifest["governance"]
+        lines.extend(
+            [
+                f"- GitHub run: `{ci['github_run_id']}` (attempt `{ci['github_run_attempt']}`)",
+                f"- Workflow: `{ci['workflow_identity']}` at `{ci['workflow_revision']}`",
+                f"- Job/check: `{ci['job_name']}` / `{ci['check_name']}`",
+                f"- Governance audit: `{governance['audit_verdict']}`",
+                "",
+                "## Required human actions",
+                "",
+            ]
+        )
+        if governance["human_actions"]:
+            lines.extend(f"- {action}" for action in governance["human_actions"])
+        else:
+            lines.append("- None.")
+    lines.extend(["", "## Validations", ""])
     for result in sorted(manifest["validations"], key=lambda item: item["validation_id"]):
         reproduction = json.dumps(result["reproduction_argv"], ensure_ascii=False)
         lines.extend(
@@ -347,6 +363,18 @@ def _markdown_code(value: str) -> str:
     fence = "`" * (longest + 1)
     padding = " " if value.startswith("`") or value.endswith("`") else ""
     return f"{fence}{padding}{value}{padding}{fence}"
+
+
+def _evidence_version(context: dict[str, Any]) -> str:
+    has_governance = "governance" in context
+    has_ci = "ci" in context
+    if has_governance != has_ci:
+        raise ValueError("CI and governance evidence bindings must be supplied together")
+    if has_ci:
+        if "suite_manifest_digest" not in context:
+            raise ValueError("CI evidence requires a protected Foundation manifest digest")
+        return "3.0.0"
+    return "2.0.0" if "suite_manifest_digest" in context else "1.0.0"
 
 
 class EvidenceWriter:
@@ -386,7 +414,7 @@ class EvidenceWriter:
             self._runs_fd = -1
             raise
         self._sealed = False
-        evidence_version = "2.0.0" if "suite_manifest_digest" in self.context else "1.0.0"
+        evidence_version = _evidence_version(self.context)
         staging = {"schema_version": evidence_version, "run_id": self.run_id, "lifecycle": "staging"}
         try:
             self._write("staging.json", canonical_bytes(staging, newline=True))
@@ -520,7 +548,7 @@ class EvidenceWriter:
         manifest = self.context
         manifest.update(
             {
-                "schema_version": "2.0.0" if "suite_manifest_digest" in manifest else "1.0.0",
+                "schema_version": _evidence_version(manifest),
                 "run_id": self.run_id,
                 "lifecycle": "complete",
                 "verdict": verdict,

@@ -1,0 +1,11 @@
+# Protected governance, validation, and release controls require owner review.
+/.github/ @MuhammadImaz
+/contracts/ @MuhammadImaz
+/schemas/ @MuhammadImaz
+/scripts/ @MuhammadImaz
+/src/mojoattention/cli/ @MuhammadImaz
+/src/mojoattention/validation/ @MuhammadImaz
+/tests/ @MuhammadImaz
+/uv.lock @MuhammadImaz
+/uv.toml @MuhammadImaz
+/pyproject.toml @MuhammadImaz

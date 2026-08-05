@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "registry_id": "mojoattention-required-checks",
+  "expected_source": "github-actions",
+  "tiers": [
+    {"tier_id":"fast","check_name":"foundation-quality","activation":"active","runner":{"class":"github-hosted-ubuntu-24.04","minimum_memory_gib":7,"minimum_logical_cpus":2,"toolchain":["python-3.14.4","uv-0.11.29","max-26.4.0"]},"trigger_classes":["pull-request","push-main"],"artifact":{"name":"foundation-evidence","retention_days":14}},
+    {"tier_id":"correctness","check_name":"correctness","activation":"reserved","runner":{"class":"calibrated-larger-runner","minimum_memory_gib":16,"minimum_logical_cpus":4,"toolchain":["python-3.14.4","uv-0.11.29","max-26.4.0"]},"trigger_classes":["pull-request"],"artifact":{"name":"correctness-evidence","retention_days":14}},
+    {"tier_id":"model","check_name":"model","activation":"reserved","runner":{"class":"calibrated-larger-runner","minimum_memory_gib":16,"minimum_logical_cpus":4,"toolchain":["python-3.14.4","uv-0.11.29","max-26.4.0"]},"trigger_classes":["pull-request"],"artifact":{"name":"model-evidence","retention_days":14}},
+    {"tier_id":"training-smoke","check_name":"training-smoke","activation":"reserved","runner":{"class":"calibrated-larger-runner","minimum_memory_gib":32,"minimum_logical_cpus":8,"toolchain":["python-3.14.4","uv-0.11.29","max-26.4.0"]},"trigger_classes":["pull-request"],"artifact":{"name":"training-smoke-evidence","retention_days":14}},
+    {"tier_id":"benchmark-smoke","check_name":"benchmark-smoke","activation":"reserved","runner":{"class":"calibrated-benchmark-runner","minimum_memory_gib":32,"minimum_logical_cpus":8,"toolchain":["python-3.14.4","uv-0.11.29","max-26.4.0"]},"trigger_classes":["pull-request"],"artifact":{"name":"benchmark-smoke-evidence","retention_days":14}},
+    {"tier_id":"nightly","check_name":"nightly","activation":"reserved","runner":{"class":"calibrated-larger-runner","minimum_memory_gib":32,"minimum_logical_cpus":8,"toolchain":["python-3.14.4","uv-0.11.29","max-26.4.0"]},"trigger_classes":["schedule"],"artifact":{"name":"nightly-evidence","retention_days":30}},
+    {"tier_id":"stable-benchmark","check_name":"stable-benchmark","activation":"reserved","runner":{"class":"calibrated-benchmark-runner","minimum_memory_gib":64,"minimum_logical_cpus":16,"toolchain":["python-3.14.4","uv-0.11.29","max-26.4.0"]},"trigger_classes":["workflow-dispatch"],"artifact":{"name":"stable-benchmark-evidence","retention_days":90}},
+    {"tier_id":"release","check_name":"release","activation":"reserved","runner":{"class":"calibrated-release-runner","minimum_memory_gib":32,"minimum_logical_cpus":8,"toolchain":["python-3.14.4","uv-0.11.29","max-26.4.0"]},"trigger_classes":["release"],"artifact":{"name":"release-evidence","retention_days":90}}
+  ],
+  "invalid_infrastructure_outcome": "infrastructure-invalid",
+  "reserved_tiers_are_passing_jobs": false
+}

@@ -117,7 +117,11 @@ def _compose_trusted_evaluation_context(
         "producer",
         "environment",
     }
-    allowed = (required, required | {"suite_manifest_digest"})
+    allowed = (
+        required,
+        required | {"suite_manifest_digest"},
+        required | {"suite_manifest_digest", "governance", "ci"},
+    )
     if set(bounded_context) not in allowed:
         raise ValueError("bounded evidence context fields are incomplete or unknown")
     payload = dict(bounded_context)
