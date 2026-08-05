@@ -13,6 +13,14 @@ export UV_CACHE_DIR="${project_root}/.cache/uv"
 "${project_root}/.tools/uv/uv" --config-file uv.toml --project "${project_root}" lock --check
 "${project_root}/scripts/run.sh" mojoattention privacy --json -
 "${project_root}/scripts/run.sh" mojoattention authority --json -
+"${project_root}/scripts/run.sh" python scripts/validate_governance_contracts.py
+current_revision="$(git rev-parse HEAD)"
+plan_path="$(mktemp "${TMPDIR:-/tmp}/mojoattention-local-ci-plan.XXXXXX")"
+trap 'rm -f -- "${plan_path}"' EXIT
+"${project_root}/scripts/run.sh" mojoattention ci plan \
+  --base "${current_revision}" --head "${current_revision}" --worktree --event push-branch --json "${plan_path}"
+plan_digest="$("${project_root}/scripts/run.sh" python -I -S -c 'import json,pathlib,sys; print(json.loads(pathlib.Path(sys.argv[1]).read_bytes())["plan_digest"])' "${plan_path}")"
+"${project_root}/scripts/run.sh" python -I -S scripts/run_ci_plan.py "${plan_path}" "${plan_digest}" "${project_root}" "${project_root}" --foundation-already-ran
 "${project_root}/scripts/run.sh" mojoattention contract validate \
   --contract contracts/acceptance/1-3.example.json \
   --source-revision 1111111111111111111111111111111111111111 \

@@ -6,7 +6,12 @@ After exact local bootstrap, run `scripts/quality.sh --local`. GitHub Actions ru
 
 The public `contracts/agent-authority.json` is provider-neutral enforcement data. Personal BMAD, Codex, agent prompts, and orchestration state stay ignored and are not required by validation. The privacy check inspects tracked path names only; it does not read ignored files or claim to detect arbitrary secrets stored under an otherwise allowed name.
 
-The standard Ubuntu 24.04 runner has less disk than the project's 15-GiB broad-work threshold. Therefore this minimal workflow deliberately does not call broad bootstrap and does not prove full MAX/compiler/host conformance. It does not activate branch protection, required checks, CODEOWNERS, approvals, bypass restrictions, rulesets, or dependency automation. Full trusted-policy CI and governance auditing remain Story 1.8 and GitHub-administrator work.
+The standard Ubuntu 24.04 runner is valid only when it satisfies the protected
+capacity and toolchain prerequisites. The workflow now evaluates trusted policy
+before candidate execution and audits an authenticated hosted observation, but
+it does not activate branch protection, CODEOWNERS review, bypass restrictions,
+rulesets, or dependency automation. Those remain explicit GitHub-administrator
+actions documented in `docs/governance.md`.
 
 The proven host is Ubuntu 26.04 LTS on x86-64. Verify that `python3 --version` is exactly `3.14.4` before bootstrap. Other compatible Linux distributions can pass with an `unproven-distribution` warning; Ubuntu 24.04 CI remains provisional until clean conformance.
 

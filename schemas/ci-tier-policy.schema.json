@@ -1,0 +1,36 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://example.invalid/mojoattention/ci-tier-policy.schema.json",
+  "type":"object","additionalProperties":false,
+  "required":["schema_version","policy_id","suite_manifest_schema","missing_suite_outcome","tiers"],
+  "properties":{
+    "schema_version":{"const":"1.0.0"},
+    "policy_id":{"const":"mojoattention-ci-tier-applicability"},
+    "suite_manifest_schema":{"const":"schemas/product-validation-suite.schema.json"},
+    "missing_suite_outcome":{"const":"contract-invalid"},
+    "tiers":{"type":"array","minItems":8,"maxItems":8,"uniqueItems":true,"prefixItems":[
+      {"$ref":"#/$defs/fast"},{"$ref":"#/$defs/correctness"},{"$ref":"#/$defs/model"},{"$ref":"#/$defs/training-smoke"},{"$ref":"#/$defs/benchmark-smoke"},{"$ref":"#/$defs/nightly"},{"$ref":"#/$defs/stable-benchmark"},{"$ref":"#/$defs/release"}
+    ],"items":false}
+  },
+  "$defs":{
+    "id":{"type":"string","pattern":"^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "path":{"type":"string","pattern":"^(?!/)(?!.*(?:^|/)\\.\\.?/)(?!.*\\\\)(?!.*//)[A-Za-z0-9._/-]+$"},
+    "event":{"enum":["pull-request","push-branch","push-main","schedule","workflow-dispatch","release"]},
+    "tier":{"type":"object","additionalProperties":false,"required":["tier_id","prerequisites","path_prefixes","event_classes","required_artifacts","command"],"properties":{
+      "tier_id":{"$ref":"#/$defs/id"},
+      "prerequisites":{"type":"array","uniqueItems":true,"items":{"$ref":"#/$defs/id"}},
+      "path_prefixes":{"type":"array","uniqueItems":true,"items":{"$ref":"#/$defs/path"}},
+      "event_classes":{"type":"array","minItems":1,"uniqueItems":true,"items":{"$ref":"#/$defs/event"}},
+      "required_artifacts":{"type":"array","minItems":2,"uniqueItems":true,"items":{"$ref":"#/$defs/path"}},
+      "command":{"type":"array","minItems":2,"uniqueItems":true,"items":{"type":"string","minLength":1,"maxLength":256,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"}}
+    }},
+    "fast":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"fast"}}}]},
+    "correctness":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"correctness"}}}]},
+    "model":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"model"}}}]},
+    "training-smoke":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"training-smoke"}}}]},
+    "benchmark-smoke":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"benchmark-smoke"}}}]},
+    "nightly":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"nightly"}}}]},
+    "stable-benchmark":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"stable-benchmark"}}}]},
+    "release":{"allOf":[{"$ref":"#/$defs/tier"},{"properties":{"tier_id":{"const":"release"}}}]}
+  }
+}

@@ -31,3 +31,16 @@ supply human authorization. The tracked template cannot authorize itself.
 The version 2 envelope binds the exact base/candidate commit and tree IDs, trusted policy blob and digest, complete change-set digest, contract digest, exact protected paths, and independently supplied human approval anchor. Its provenance digest is SHA-256 over canonical compact sorted JSON with only `provenance_digest` omitted.
 
 Bootstrapping the first protected policy and approval store is a one-time human governance action outside this validator. Branch-local execution is deterministic feedback; only protected CI or equivalent administrator-controlled orchestration can establish that the supplied bytes and identities are authoritative.
+
+`required-checks.json` reserves eight stable check identities and activates only
+`foundation-quality`; reserved entries are not synthetic jobs. The Foundation
+manifest binds canonical JSON, deterministic Markdown, attachment closure,
+governance, and GitHub run identity. `repository-governance.json` is configured
+intent only. See `docs/governance.md` for authenticated observation and human
+activation procedures.
+
+`ci-tier-policy.json` maps authenticated changed paths and event classes to the
+same eight identities, closes prerequisite tiers, and names the canonical
+manifest, runner, and argv required for activation. A product tier moves from
+`reserved` to `active` only in the same change that supplies its canonical
+implementation; otherwise planning is `contract-invalid`.

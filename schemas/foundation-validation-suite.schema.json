@@ -1,0 +1,29 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema",
+  "$id":"https://example.invalid/mojoattention/foundation-validation-suite.schema.json",
+  "type":"object",
+  "additionalProperties":false,
+  "required":["schema_version","suite_id","manifest_digest","required_total","validations"],
+  "properties":{
+    "schema_version":{"const":"1.0.0"},
+    "suite_id":{"const":"foundation"},
+    "manifest_digest":{"$ref":"#/$defs/digest"},
+    "required_total":{"const":5},
+    "validations":{
+      "type":"array","minItems":5,"maxItems":5,"uniqueItems":true,
+      "prefixItems":[
+        {"$ref":"#/$defs/found_001"},{"$ref":"#/$defs/found_002"},{"$ref":"#/$defs/found_003"},{"$ref":"#/$defs/found_004"},{"$ref":"#/$defs/found_005"}
+      ],
+      "items":false
+    }
+  },
+  "$defs":{
+    "digest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
+    "entry":{"type":"object","additionalProperties":false,"required":["validation_id","case_id","purpose"],"properties":{"validation_id":{"type":"string","pattern":"^FOUND-[0-9]{3}$"},"case_id":{"type":"string","pattern":"^[a-z0-9]+(?:-[a-z0-9]+)*$"},"purpose":{"type":"string","minLength":1,"maxLength":160,"pattern":"^[^\\u0000-\\u001f\\u007f]+$"}}},
+    "found_001":{"allOf":[{"$ref":"#/$defs/entry"},{"properties":{"validation_id":{"const":"FOUND-001"},"case_id":{"const":"canonical-json"}}}]},
+    "found_002":{"allOf":[{"$ref":"#/$defs/entry"},{"properties":{"validation_id":{"const":"FOUND-002"},"case_id":{"const":"markdown-projection"}}}]},
+    "found_003":{"allOf":[{"$ref":"#/$defs/entry"},{"properties":{"validation_id":{"const":"FOUND-003"},"case_id":{"const":"attachment-closure"}}}]},
+    "found_004":{"allOf":[{"$ref":"#/$defs/entry"},{"properties":{"validation_id":{"const":"FOUND-004"},"case_id":{"const":"governance-binding"}}}]},
+    "found_005":{"allOf":[{"$ref":"#/$defs/entry"},{"properties":{"validation_id":{"const":"FOUND-005"},"case_id":{"const":"github-run-identity"}}}]}
+  }
+}
