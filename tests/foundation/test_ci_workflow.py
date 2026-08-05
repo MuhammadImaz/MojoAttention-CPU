@@ -82,6 +82,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("name: Foundation Quality", text)
         self.assertIn("pull_request:", text)
         self.assertIn("push:", text)
+        self.assertEqual(2, text.count("branches: [main]"))
         self.assertNotIn("pull_request_target", text)
         self.assertNotIn("paths:", text)
         self.assertIn("contents: read", text)
