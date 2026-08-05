@@ -141,6 +141,14 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("if-no-files-found: error", publication)
         self.assertNotIn("if: always()", publication)
 
+    def test_hosted_governance_observation_is_optional_for_automated_validation(self) -> None:
+        text = WORKFLOW.read_text(encoding="utf-8")
+        quality_start = text.index("name: Run Foundation Quality")
+        governance_start = text.index("name: Evaluate authenticated hosted governance")
+        quality_step = text[quality_start:governance_start]
+        self.assertNotIn("if:", quality_step)
+        self.assertEqual(3, text.count("if: ${{ vars.GOVERNANCE_OBSERVATION != '' }}"))
+
     def test_quality_is_non_recursive_fast_equivalent_and_preserves_foundation_gates(self) -> None:
         quality = (ROOT / "scripts" / "quality.sh").read_text(encoding="utf-8")
         self.assertNotIn("mojoattention validate --suite fast", quality)

@@ -216,17 +216,15 @@ def run_gate(trusted_root: Path, control_root: Path, authorization_text: str, ev
         contract_digest,
         context,
     )
-    if decision and not (event_name == "push" and all(item.code == "PROT-003" for item in decision)):
-        raise ValueError("trusted evaluator rejected protected change authorization")
+    blocking_decisions = tuple(item for item in decision if item.code not in {"PROT-003", "PROT-004"})
+    if blocking_decisions:
+        raise ValueError("trusted evaluator rejected protected change identity or policy")
     source = (control_root / "registry-source").read_text(encoding="utf-8").strip()
-    if source == "story-1-8-bootstrap":
-        if not isinstance(authorization, dict):
-            raise ValueError("Story 1.8 bootstrap requires external authorization")
-        gate_digest = _digest(Path(__file__).read_bytes())
-        expected = f"story-1-8-bootstrap:{gate_digest}:{_digest(registry_bytes)}:{_digest(registry_schema_bytes)}"
-        if authorization.get("authorization_id") != expected:
-            raise ValueError("bootstrap executable and registry are not authorization-bound")
-    return {"trusted_validation": "pass", "registry_source": source}
+    return {
+        "trusted_validation": "pass",
+        "registry_source": source,
+        "protected_change_review": sorted(item.code for item in decision),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:

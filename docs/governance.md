@@ -4,6 +4,14 @@ The files in this repository declare governance intent. They do not prove that
 GitHub enforces it. Only an authenticated, schema-valid observation evaluated by
 `mojoattention governance audit` can report observed activation.
 
+The required `foundation-quality` validation remains fully automatic. A missing
+hosted-governance observation does not preempt code, contract, policy, static,
+typing, or test validation. When `GOVERNANCE_OBSERVATION` is configured, the
+same workflow additionally audits and publishes hosted-governance evidence;
+observed drift then fails closed. Protected-change findings remain visible for
+review but do not require a separately generated authorization token merely to
+run CI.
+
 ## Trusted CI order
 
 `foundation-quality` resolves immutable event identity, checks out the trusted

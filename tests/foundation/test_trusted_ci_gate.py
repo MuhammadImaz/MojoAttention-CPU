@@ -53,3 +53,10 @@ def test_workflow_contains_no_fake_jsonschema_module() -> None:
     workflow = (ROOT / ".github/workflows/foundation-quality.yml").read_text(encoding="utf-8")
     assert 'types.ModuleType("jsonschema")' not in workflow
     assert "Draft202012Validator" not in workflow
+
+
+def test_protected_change_review_does_not_preempt_automated_validation() -> None:
+    gate = (ROOT / "scripts/trusted_ci_gate.py").read_text(encoding="utf-8")
+    assert "Story 1.8 bootstrap requires external authorization" not in gate
+    assert 'item.code not in {"PROT-003", "PROT-004"}' in gate
+    assert '"protected_change_review"' in gate

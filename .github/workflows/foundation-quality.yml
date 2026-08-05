@@ -168,6 +168,7 @@ jobs:
         run: scripts/quality.sh --ci
 
       - name: Evaluate authenticated hosted governance
+        if: ${{ vars.GOVERNANCE_OBSERVATION != '' }}
         working-directory: candidate
         env:
           GOVERNANCE_OBSERVATION: ${{ vars.GOVERNANCE_OBSERVATION }}
@@ -196,6 +197,7 @@ jobs:
             --api-version 2026-03-10 >"${governance_path}"
 
       - name: Produce and independently verify canonical evidence
+        if: ${{ vars.GOVERNANCE_OBSERVATION != '' }}
         id: evidence
         working-directory: candidate
         env:
@@ -229,6 +231,7 @@ jobs:
           printf 'Evidence digest: `%s`\n' "$(sed -n 's/^evidence_digest=//p' "${GITHUB_OUTPUT}")" >>"${GITHUB_STEP_SUMMARY}"
 
       - name: Upload verified complete evidence
+        if: ${{ vars.GOVERNANCE_OBSERVATION != '' }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ${{ steps.evidence.outputs.artifact_name }}

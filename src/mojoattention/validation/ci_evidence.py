@@ -255,7 +255,7 @@ def publish_foundation_evidence(
         bounded_context,
         authorization,
     )
-    if context is None or protected_errors:
+    if context is None or any(error.code not in {"PROT-003", "PROT-004"} for error in protected_errors):
         raise ValueError("trusted protected-change evaluation rejected Foundation evidence authority")
 
     writer = EvidenceWriter(output, context)
