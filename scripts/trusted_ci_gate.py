@@ -144,6 +144,13 @@ def _digest(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
+def _canonical_digest(value: dict[str, Any], excluded: str) -> str:
+    unsigned = dict(value)
+    unsigned.pop(excluded, None)
+    raw = json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()
+    return "sha256:" + _digest(raw)
+
+
 def _load_json(path: Path) -> tuple[bytes, dict[str, Any]]:
     raw = path.read_bytes()
     value = json.loads(raw)
@@ -172,6 +179,131 @@ def _load_trusted_evaluator(control_root: Path) -> Any:
     return sys.modules["mojoattention.validation.protected_assets"]
 
 
+def _validate_applicable_tiers(
+    trusted_root: Path,
+    head: str,
+    effects: tuple[object, ...],
+    tier_policy: dict[str, Any],
+    trusted_registry: dict[str, Any],
+    candidate_registry: dict[str, Any],
+    event_class: str,
+    manifest_schema: dict[str, Any],
+) -> tuple[tuple[str, ...], tuple[dict[str, object], ...]]:
+    trusted_tiers = trusted_registry["tiers"]
+    candidate_tiers = candidate_registry["tiers"]
+    if len(trusted_tiers) != len(candidate_tiers):
+        raise ValueError("candidate required-check inventory changed cardinality")
+    for trusted, candidate in zip(trusted_tiers, candidate_tiers, strict=True):
+        normalized = dict(candidate)
+        normalized["activation"] = trusted["activation"]
+        if normalized != trusted:
+            raise ValueError("candidate changed required-check identity outside activation")
+    paths = {
+        path
+        for effect in effects
+        for path in (getattr(effect, "path", None), getattr(effect, "source_path", None))
+        if isinstance(path, str)
+    }
+    if any(
+        not isinstance(path, str)
+        or re.fullmatch(r"^(?!/)(?!.*(?:^|/)\.\.?/)(?!.*\\)(?!.*//)[A-Za-z0-9._/-]+$", path) is None
+        for effect in effects
+        for path in (getattr(effect, "path", None), getattr(effect, "source_path", None))
+        if path is not None
+    ):
+        raise ValueError("changed path is unsafe or noncanonical")
+    by_id = {item["tier_id"]: item for item in tier_policy["tiers"]}
+    required: set[str] = set()
+    for item in tier_policy["tiers"]:
+        path_match = any(
+            path == prefix or path.startswith(prefix + "/") for prefix in item["path_prefixes"] for path in paths
+        )
+        artifact_match = any(path in item["required_artifacts"] for path in paths)
+        if artifact_match or (event_class in item["event_classes"] and (path_match or not item["path_prefixes"])):
+            required.add(item["tier_id"])
+
+    def add_prerequisites(tier_id: str) -> None:
+        for prerequisite in by_id[tier_id]["prerequisites"]:
+            if prerequisite not in required:
+                required.add(prerequisite)
+                add_prerequisites(prerequisite)
+
+    for tier_id in tuple(required):
+        add_prerequisites(tier_id)
+    tree = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", "--name-only", head],
+        cwd=trusted_root,
+        check=True,
+        capture_output=True,
+    ).stdout
+    available = {item.decode("utf-8") for item in tree.split(b"\0") if item}
+    candidate_by_id = {item["tier_id"]: item for item in candidate_tiers}
+    executions: list[dict[str, object]] = []
+    for tier_id in (item["tier_id"] for item in tier_policy["tiers"] if item["tier_id"] in required):
+        if candidate_by_id[tier_id]["activation"] != "active":
+            raise ValueError(f"applicable tier remains reserved: {tier_id}")
+        missing = set(by_id[tier_id]["required_artifacts"]) - available
+        if missing:
+            raise ValueError(f"applicable tier lacks canonical artifacts: {tier_id}")
+        if tier_id != "fast":
+            manifest_path = by_id[tier_id]["required_artifacts"][0]
+            raw_manifest = subprocess.run(
+                ["git", "show", f"{head}:{manifest_path}"],
+                cwd=trusted_root,
+                check=True,
+                capture_output=True,
+            ).stdout
+            manifest = json.loads(raw_manifest)
+            manifest_issues = Draft202012Validator(manifest_schema).iter_errors(manifest)
+            if manifest_issues:
+                raise ValueError(f"applicable tier manifest is schema-invalid: {tier_id}")
+            validations = manifest.get("validations") if isinstance(manifest, dict) else None
+            validation_ids = (
+                [item.get("validation_id") for item in validations if isinstance(item, dict)]
+                if isinstance(validations, list)
+                else []
+            )
+            required_total = sum(item.get("required_count", 0) for item in validations if isinstance(item, dict))
+            if (
+                not validation_ids
+                or not all(
+                    isinstance(item, str) and re.fullmatch(r"^[A-Z][A-Z0-9]*-[0-9]{3}$", item)
+                    for item in validation_ids
+                )
+                or len(validation_ids) != len(set(validation_ids))
+                or manifest.get("suite_id") != tier_id
+                or manifest.get("schema_version") != "1.0.0"
+                or manifest.get("required_total") != required_total
+                or manifest.get("manifest_digest") != _canonical_digest(manifest, "manifest_digest")
+                or manifest.get("verdict_rules")
+                != {
+                    "skip": "contract-invalid",
+                    "xfail": "contract-invalid",
+                    "empty": "contract-invalid",
+                    "missing": "contract-invalid",
+                    "duplicate": "contract-invalid",
+                    "reduced": "contract-invalid",
+                }
+                or not isinstance(manifest.get("evidence"), dict)
+                or manifest["evidence"].get("require_complete") is not True
+                or manifest["evidence"].get("require_sha256_closure") is not True
+            ):
+                raise ValueError(f"applicable tier manifest inventory or closure is invalid: {tier_id}")
+        runner = candidate_by_id[tier_id]["runner"]
+        executions.append(
+            {
+                "tier_id": tier_id,
+                "command": by_id[tier_id]["command"],
+                "runner_class": runner["class"],
+                "minimum_memory_gib": runner["minimum_memory_gib"],
+                "minimum_logical_cpus": runner["minimum_logical_cpus"],
+                **({} if tier_id == "fast" else {"manifest": manifest}),
+            }
+        )
+    ordered = tuple(item["tier_id"] for item in tier_policy["tiers"] if item["tier_id"] in required)
+    return ordered, tuple(executions)
+
+
 def run_gate(trusted_root: Path, control_root: Path, authorization_text: str, event_name: str) -> dict[str, object]:
     base = os.environ["TRUSTED_BASE"]
     head = os.environ["CANDIDATE_HEAD"]
@@ -179,7 +311,16 @@ def run_gate(trusted_root: Path, control_root: Path, authorization_text: str, ev
     policy_schema_bytes, policy_schema = _load_json(control_root / "schemas/protected-assets.schema.json")
     registry_bytes, registry = _load_json(control_root / "contracts/required-checks.json")
     registry_schema_bytes, registry_schema = _load_json(control_root / "schemas/required-checks.schema.json")
-    for record, schema, name in ((policy, policy_schema, "policy"), (registry, registry_schema, "registry")):
+    _, candidate_registry = _load_json(control_root / "contracts/candidate-required-checks.json")
+    tier_policy_bytes, tier_policy = _load_json(control_root / "contracts/ci-tier-policy.json")
+    tier_policy_schema_bytes, tier_policy_schema = _load_json(control_root / "schemas/ci-tier-policy.schema.json")
+    manifest_schema_bytes, manifest_schema = _load_json(control_root / "schemas/product-validation-suite.schema.json")
+    for record, schema, name in (
+        (policy, policy_schema, "policy"),
+        (registry, registry_schema, "registry"),
+        (candidate_registry, registry_schema, "candidate registry"),
+        (tier_policy, tier_policy_schema, "CI tier policy"),
+    ):
         issues = Draft202012Validator(schema).iter_errors(record)
         if issues:
             raise ValueError(f"{name} is schema-invalid at {issues[0].absolute_path}")
@@ -219,12 +360,50 @@ def run_gate(trusted_root: Path, control_root: Path, authorization_text: str, ev
     blocking_decisions = tuple(item for item in decision if item.code not in {"PROT-003", "PROT-004"})
     if blocking_decisions:
         raise ValueError("trusted evaluator rejected protected change identity or policy")
+    required_tiers, executions = _validate_applicable_tiers(
+        trusted_root,
+        head,
+        inspection.effects,
+        tier_policy,
+        registry,
+        candidate_registry,
+        os.environ["CI_EVENT_CLASS"],
+        manifest_schema,
+    )
     source = (control_root / "registry-source").read_text(encoding="utf-8").strip()
-    return {
+    plan: dict[str, object] = {
+        "schema_version": "1.0.0",
+        "verdict": "pass",
+        "base_revision": base,
+        "head_revision": head,
+        "event_class": os.environ["CI_EVENT_CLASS"],
+        "changed_paths": sorted(
+            {
+                path
+                for effect in inspection.effects
+                for path in (getattr(effect, "path", None), getattr(effect, "source_path", None))
+                if isinstance(path, str)
+            }
+        ),
+        "required_tiers": required_tiers,
+        "not_applicable_tiers": tuple(
+            item["tier_id"] for item in tier_policy["tiers"] if item["tier_id"] not in required_tiers
+        ),
+        "executions": executions,
         "trusted_validation": "pass",
         "registry_source": source,
         "protected_change_review": sorted(item.code for item in decision),
+        "trusted_control_digests": {
+            "contracts/ci-tier-policy.json": "sha256:" + _digest(tier_policy_bytes),
+            "contracts/required-checks.json": "sha256:" + _digest(registry_bytes),
+            "schemas/ci-tier-policy.schema.json": "sha256:" + _digest(tier_policy_schema_bytes),
+            "schemas/product-validation-suite.schema.json": "sha256:" + _digest(manifest_schema_bytes),
+            "schemas/required-checks.schema.json": "sha256:" + _digest(registry_schema_bytes),
+        },
     }
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+    plan["plan_digest"] = "sha256:" + _digest(canonical)
+    return plan
 
 
 def main(argv: list[str] | None = None) -> int:

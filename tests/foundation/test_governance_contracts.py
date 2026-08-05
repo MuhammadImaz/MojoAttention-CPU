@@ -124,12 +124,16 @@ class GovernanceProtectionTests(unittest.TestCase):
         authority_paths = set(authority["protected_paths"])
         expected = {
             "contracts/required-checks.json",
+            "contracts/ci-tier-policy.json",
             "contracts/repository-governance.json",
             "schemas/required-checks.schema.json",
+            "schemas/ci-tier-policy.schema.json",
             "schemas/repository-governance.schema.json",
             "schemas/governance-observation.schema.json",
             "src/mojoattention/validation/governance.py",
             "src/mojoattention/validation/ci_evidence.py",
+            "src/mojoattention/validation/ci_planner.py",
+            "scripts/run_ci_plan.py",
             "scripts/validate_governance_contracts.py",
             ".github/CODEOWNERS",
             ".github/dependabot.yml",

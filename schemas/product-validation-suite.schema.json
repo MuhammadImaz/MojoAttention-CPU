@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/mojoattention/product-validation-suite.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "suite_id", "manifest_digest", "required_total", "validations", "verdict_rules", "evidence"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "suite_id": {"enum": ["correctness", "model", "training-smoke", "benchmark-smoke", "nightly", "stable-benchmark", "release"]},
+    "manifest_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "required_total": {"type": "integer", "minimum": 1},
+    "validations": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {
+      "type": "object", "additionalProperties": false, "required": ["validation_id", "required_count"],
+      "properties": {"validation_id": {"type": "string", "pattern": "^[A-Z][A-Z0-9]*-[0-9]{3}$"}, "required_count": {"type": "integer", "minimum": 1}}
+    }},
+    "verdict_rules": {"type": "object", "additionalProperties": false,
+      "required": ["skip", "xfail", "empty", "missing", "duplicate", "reduced"],
+      "properties": {"skip": {"const": "contract-invalid"}, "xfail": {"const": "contract-invalid"}, "empty": {"const": "contract-invalid"}, "missing": {"const": "contract-invalid"}, "duplicate": {"const": "contract-invalid"}, "reduced": {"const": "contract-invalid"}}
+    },
+    "evidence": {"type": "object", "additionalProperties": false,
+      "required": ["require_complete", "require_sha256_closure"],
+      "properties": {"require_complete": {"const": true}, "require_sha256_closure": {"const": true}}
+    }
+  }
+}

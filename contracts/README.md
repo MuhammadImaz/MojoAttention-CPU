@@ -38,3 +38,9 @@ manifest binds canonical JSON, deterministic Markdown, attachment closure,
 governance, and GitHub run identity. `repository-governance.json` is configured
 intent only. See `docs/governance.md` for authenticated observation and human
 activation procedures.
+
+`ci-tier-policy.json` maps authenticated changed paths and event classes to the
+same eight identities, closes prerequisite tiers, and names the canonical
+manifest, runner, and argv required for activation. A product tier moves from
+`reserved` to `active` only in the same change that supplies its canonical
+implementation; otherwise planning is `contract-invalid`.

@@ -14,6 +14,7 @@ from mojoattention.validation.ci_evidence import load_foundation_manifest
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     for contract_name, schema_name in (
+        ("ci-tier-policy.json", "ci-tier-policy.schema.json"),
         ("repository-governance.json", "repository-governance.schema.json"),
         ("required-checks.json", "required-checks.schema.json"),
     ):
@@ -23,6 +24,8 @@ def main() -> int:
         errors = tuple(Draft202012Validator(schema).iter_errors(contract))
         if errors:
             raise ValueError(f"{contract_name} is invalid: {errors[0].message}")
+    product_schema = json.loads((root / "schemas/product-validation-suite.schema.json").read_bytes())
+    Draft202012Validator.check_schema(product_schema)
     tiers = json.loads((root / "contracts/required-checks.json").read_bytes())["tiers"]
     if len({item["tier_id"] for item in tiers}) != 8 or len({item["check_name"] for item in tiers}) != 8:
         raise ValueError("required-check tier and check identities must contain eight unique entries")

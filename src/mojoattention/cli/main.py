@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -33,6 +34,14 @@ from mojoattention.validation.agent_loop import (
     evaluate_retry,
 )
 from mojoattention.validation.authority import authorize_read, validate_manifest
+from mojoattention.validation.ci_planner import (
+    git_changes,
+    git_paths,
+    git_suite_inventories,
+    load_ci_controls,
+    plan_ci,
+    worktree_snapshot,
+)
 from mojoattention.validation.evidence import EXIT_CODES as EVIDENCE_EXIT_CODES
 from mojoattention.validation.evidence import (
     Attachment,
@@ -973,6 +982,22 @@ def build_parser() -> argparse.ArgumentParser:
     privacy.add_argument("--json", dest="json_path", default="-", metavar="PATH")
     authority = commands.add_parser("authority")
     authority.add_argument("--json", dest="json_path", default="-", metavar="PATH")
+    ci = commands.add_parser("ci")
+    ci_commands = ci.add_subparsers(dest="ci_command", required=True, parser_class=ProjectArgumentParser)
+    ci_plan = ci_commands.add_parser("plan")
+    ci_plan.add_argument("--base", required=True, metavar="SHA")
+    ci_plan.add_argument("--head", required=True, metavar="SHA")
+    ci_plan.add_argument("--worktree", action="store_true", help="plan the tracked and untracked local snapshot")
+    ci_plan.add_argument(
+        "--event",
+        required=True,
+        choices=("pull-request", "push-branch", "push-main", "schedule", "workflow-dispatch", "release"),
+    )
+    ci_plan.add_argument("--policy", default="contracts/ci-tier-policy.json", metavar="PATH")
+    ci_plan.add_argument("--policy-schema", default="schemas/ci-tier-policy.schema.json", metavar="PATH")
+    ci_plan.add_argument("--required-checks", default="contracts/required-checks.json", metavar="PATH")
+    ci_plan.add_argument("--required-checks-schema", default="schemas/required-checks.schema.json", metavar="PATH")
+    ci_plan.add_argument("--json", dest="json_path", default="-", metavar="PATH")
     governance = commands.add_parser("governance")
     governance_commands = governance.add_subparsers(
         dest="governance_command",
@@ -1088,6 +1113,85 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "ci":
+        assert args.ci_command == "plan"
+        try:
+            ci_root = _root()
+            ci_policy, ci_registry = load_ci_controls(
+                Path(args.policy),
+                Path(args.policy_schema),
+                Path(args.required_checks),
+                Path(args.required_checks_schema),
+            )
+            if args.worktree:
+                ci_changes, ci_paths, ci_inventories, ci_head = worktree_snapshot(ci_root, args.base, ci_policy)
+            else:
+                ci_changes = git_changes(ci_root, args.base, args.head)
+                ci_paths = git_paths(ci_root, args.head)
+                ci_inventories = git_suite_inventories(ci_root, args.head, ci_policy)
+                ci_head = args.head
+            ci_plan_result = plan_ci(
+                ci_policy,
+                ci_registry,
+                ci_changes,
+                ci_paths,
+                ci_inventories,
+                event_class=args.event,
+                base_revision=args.base,
+                head_revision=ci_head,
+            )
+            ci_payload = ci_plan_result.as_dict()
+            if args.worktree and ci_plan_result.verdict == "pass":
+                ci_payload["identity_kind"] = "worktree"
+                ci_payload["trusted_control_digests"] = {
+                    str(path): "sha256:" + hashlib.sha256(Path(path).read_bytes()).hexdigest()
+                    for path in (
+                        args.policy,
+                        args.policy_schema,
+                        args.required_checks,
+                        args.required_checks_schema,
+                        ci_policy["suite_manifest_schema"],
+                    )
+                }
+                ci_executions = ci_payload["executions"]
+                if not isinstance(ci_executions, list):
+                    raise ValueError("CI execution plan is invalid")
+                for execution in ci_executions:
+                    if not isinstance(execution, dict):
+                        raise ValueError("CI execution entry is invalid")
+                    if execution["tier_id"] != "fast":
+                        tier = next(item for item in ci_policy["tiers"] if item["tier_id"] == execution["tier_id"])
+                        execution["manifest"] = json.loads(Path(tier["required_artifacts"][0]).read_bytes())
+                ci_payload.pop("plan_digest", None)
+                canonical = json.dumps(ci_payload, sort_keys=True, separators=(",", ":")).encode()
+                ci_payload["plan_digest"] = "sha256:" + hashlib.sha256(canonical).hexdigest()
+            ci_exit_code = EVIDENCE_EXIT_CODES[ci_plan_result.verdict]
+            for ci_finding in ci_plan_result.findings:
+                print(
+                    json.dumps(
+                        {"code": ci_finding.code, "message": ci_finding.message, "context": ci_finding.context},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    file=sys.stderr,
+                )
+        except OSError, subprocess.CalledProcessError, TypeError, json.JSONDecodeError, ValueError:
+            ci_payload = {
+                "schema_version": "1.0.0",
+                "verdict": "contract-invalid",
+                "findings": [
+                    {
+                        "code": "CI-PLAN-001",
+                        "message": "CI plan inputs, identity, or trusted controls are invalid",
+                        "context": {},
+                    }
+                ],
+            }
+            ci_exit_code = EVIDENCE_EXIT_CODES["contract-invalid"]
+            print("CI-PLAN-001 contract-invalid: CI planning failed", file=sys.stderr)
+        if not _write_payload(canonical_bytes(ci_payload, newline=True).decode(), args.json_path):
+            return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+        return ci_exit_code
     if args.command == "governance":
         assert args.governance_command == "audit"
         command_argv = ["mojoattention", *(argv if argv is not None else sys.argv[1:])]

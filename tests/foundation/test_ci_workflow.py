@@ -56,12 +56,15 @@ class WorkflowPolicyTests(unittest.TestCase):
             "contracts/protected-assets.json",
             "schemas/protected-assets.schema.json",
             "contracts/required-checks.json",
+            "contracts/ci-tier-policy.json",
             "schemas/required-checks.schema.json",
+            "schemas/ci-tier-policy.schema.json",
             "src/mojoattention/validation/protected_assets.py",
             "scripts/trusted_ci_gate.py",
         ):
             self.assertIn(path, text)
         self.assertIn("story-1-8-bootstrap", text)
+        self.assertIn("candidate-required-checks.json", text)
         self.assertIn("infrastructure-invalid", text)
         self.assertIn("minimum_memory_gib", text)
         self.assertIn("minimum_logical_cpus", text)
@@ -83,7 +86,7 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("name: Foundation Quality", text)
         self.assertIn("pull_request:", text)
         self.assertIn("push:", text)
-        self.assertEqual(1, text.count("branches: [main]"))
+        self.assertNotIn("branches: [main]", text)
         self.assertIn("github.event.repository.default_branch", text)
         self.assertIn("steps.event_identity.outputs.trusted_ref", text)
         self.assertIn("Finalize immutable trusted base identity", text)
@@ -105,7 +108,9 @@ class WorkflowPolicyTests(unittest.TestCase):
         uses = re.findall(r"uses:\s*([^\s#]+)", text)
         self.assertEqual(4, len(uses))
         self.assertTrue(all(re.fullmatch(r"actions/[a-z-]+@[0-9a-f]{40}", item) for item in uses), uses)
-        self.assertIn("scripts/quality.sh --ci", text)
+        self.assertIn("scripts/run_ci_plan.py", text)
+        tier_policy = (ROOT / "contracts/ci-tier-policy.json").read_text(encoding="utf-8")
+        self.assertIn('"command":["scripts/quality.sh","--ci"]', tier_policy)
         self.assertIn("scripts/install-uv.sh", text)
         self.assertIn("UV_DEFAULT_INDEX: https://pypi.org/simple", text)
         self.assertNotIn("UV_INDEX:", text)

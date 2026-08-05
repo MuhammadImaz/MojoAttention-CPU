@@ -22,6 +22,7 @@ def test_dependency_free_validator_accepts_both_protected_controls() -> None:
     for record_path, schema_path in (
         ("contracts/protected-assets.json", "schemas/protected-assets.schema.json"),
         ("contracts/required-checks.json", "schemas/required-checks.schema.json"),
+        ("contracts/ci-tier-policy.json", "schemas/ci-tier-policy.schema.json"),
     ):
         record = json.loads((ROOT / record_path).read_text(encoding="utf-8"))
         schema = json.loads((ROOT / schema_path).read_text(encoding="utf-8"))
@@ -60,3 +61,5 @@ def test_protected_change_review_does_not_preempt_automated_validation() -> None
     assert "Story 1.8 bootstrap requires external authorization" not in gate
     assert 'item.code not in {"PROT-003", "PROT-004"}' in gate
     assert '"protected_change_review"' in gate
+    assert "_validate_applicable_tiers" in gate
+    assert "applicable tier remains reserved" in gate

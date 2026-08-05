@@ -28,6 +28,38 @@ The active stable check is `foundation-quality`. `correctness`, `model`,
 capacity or toolchain mismatch is `infrastructure-invalid`; the inventory must
 not be reduced to fit a runner.
 
+## Product-validation applicability
+
+`contracts/ci-tier-policy.json` is the protected bridge between future product
+paths and CI. The planner evaluates the authenticated base/head change set,
+including rename/copy source and destination paths, and closes prerequisites:
+
+| Changed area or event | Required product validation |
+| --- | --- |
+| Kernel contract, domain, backend, conformance, correctness | Correctness |
+| Model, generation, model fixtures/tests | Correctness + Model |
+| Data or training | Correctness + Model + Training Smoke |
+| Benchmark implementation/protocol | Correctness + Benchmark Smoke |
+| Schedule/manual nightly | Correctness + Model + Training Smoke + Nightly |
+| Release | Correctness + Model + Training Smoke + Benchmark Smoke + Release |
+
+A future story activates its tier in `contracts/required-checks.json` and adds
+both the canonical suite manifest and runner in the same change. If governed
+production paths appear while that tier remains reserved, has a missing
+inventory, or lacks its runner, planning returns `contract-invalid`; CI does not
+emit a product pass. After bootstrap, applicability comes from the trusted base,
+so candidate code cannot remove its own required tier. Runner capacity is
+checked for every execution and returns `infrastructure-invalid` rather than
+shrinking work.
+
+```bash
+scripts/run.sh mojoattention ci plan \
+  --base BASE_SHA --head HEAD_SHA --event pull-request --json -
+```
+
+The canonical output lists required and non-applicable tiers, exact argv, and
+typed findings. “Not applicable” is not a passing product-validation claim.
+
 ## Offline audit
 
 Export an authenticated observation matching
