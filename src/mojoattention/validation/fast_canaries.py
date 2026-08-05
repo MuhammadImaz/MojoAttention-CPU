@@ -13,9 +13,11 @@ from typing import Literal
 
 from mojoattention.validation.acceptance import ContractContext, issue_contract, validate_contract
 from mojoattention.validation.agent_loop import (
+    AgentLoopError,
     ControlBinding,
     Diagnosis,
     EvidenceBinding,
+    EvidenceObservation,
     Improvement,
     LoopEvent,
     LoopHeader,
@@ -277,6 +279,25 @@ def agent_loop_canary(fixture: AgentLoopFixture, root: Path) -> CanaryOutcome:
         None,
         "validator",
         "2026-07-29T00:00:01Z",
+        validation_errors=(
+            AgentLoopError(
+                "LOOP-101",
+                "canary failure",
+                {
+                    **({"failure_kind": fixture.semantic_failure} if fixture.semantic_failure is not None else {}),
+                    "affected_paths": ["src/mojoattention/validation/agent_loop.py"],
+                },
+            ),
+        ),
+        validation_observations=(
+            EvidenceObservation(
+                "FAST-014",
+                "agent-loop-policy-canary",
+                digest,
+                "fail",
+                (("failures", 2),),
+            ),
+        ),
     )
     state = LoopState(
         header,
