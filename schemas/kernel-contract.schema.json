@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/mojoattention/kernel-contract.schema.json",
+  "title": "MojoAttention Kernel Contract",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "contract_id", "contract_version", "contract_digest", "axes", "semantics", "supported_domain", "memory", "native_abi", "errors", "golden_examples"],
+  "properties": {
+    "schema_version": {"const": "1.0.0"},
+    "contract_id": {"const": "mojoattention-causal-attention"},
+    "contract_version": {"const": 1},
+    "contract_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "axes": {"type": "array", "minItems": 4, "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/axis"}},
+    "semantics": {"$ref": "#/$defs/semantics"},
+    "supported_domain": {"$ref": "#/$defs/domain"},
+    "memory": {"$ref": "#/$defs/memory"},
+    "native_abi": {"$ref": "#/$defs/abi"},
+    "errors": {"type": "array", "minItems": 18, "maxItems": 18, "uniqueItems": true, "items": {"$ref": "#/$defs/error"}},
+    "golden_examples": {"type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true, "items": {"$ref": "#/$defs/example"}}
+  },
+  "$defs": {
+    "axis": {"type": "object", "additionalProperties": false, "required": ["symbol", "meaning"], "properties": {"symbol": {"enum": ["B", "H", "S", "D"]}, "meaning": {"type": "string", "minLength": 1}}},
+    "semantics": {"type": "object", "additionalProperties": false, "required": ["score_equation", "mask_predicate", "softmax_axis", "output_equation", "input_q_scaling", "q_is_pre_scaled", "scaling_count", "arithmetic_dtype", "accumulation_dtype", "fully_masked_rows"], "properties": {"score_equation": {"type": "string"}, "mask_predicate": {"type": "string"}, "softmax_axis": {"type": "string"}, "output_equation": {"type": "string"}, "input_q_scaling": {"type": "string"}, "q_is_pre_scaled": {"type": "boolean"}, "scaling_count": {"type": "integer", "minimum": 0}, "arithmetic_dtype": {"type": "string"}, "accumulation_dtype": {"type": "string"}, "fully_masked_rows": {"type": "string"}}},
+    "domain": {"type": "object", "additionalProperties": false, "required": ["device", "dtype", "batch_sizes", "head_counts", "sequence_lengths", "head_dimensions", "finite_only", "maximum_absolute_value", "required_total", "shapes"], "properties": {"device": {"type": "string"}, "dtype": {"type": "string"}, "batch_sizes": {"$ref": "#/$defs/integers"}, "head_counts": {"$ref": "#/$defs/integers"}, "sequence_lengths": {"$ref": "#/$defs/integers"}, "head_dimensions": {"$ref": "#/$defs/integers"}, "finite_only": {"type": "boolean"}, "maximum_absolute_value": {"type": "number", "exclusiveMinimum": 0}, "required_total": {"type": "integer", "minimum": 1}, "shapes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/shape"}}}},
+    "integers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 1}},
+    "shape": {"type": "object", "additionalProperties": false, "required": ["B", "H", "S", "D"], "properties": {"B": {"type": "integer", "minimum": 1}, "H": {"type": "integer", "minimum": 1}, "S": {"type": "integer", "minimum": 1}, "D": {"type": "integer", "minimum": 1}}},
+    "memory": {"type": "object", "additionalProperties": false, "required": ["rank", "layout", "standard_contiguous_only", "channels_last_supported", "equal_qkv_shapes", "output_shape_equals_q", "output_strides_equal_q", "pairwise_non_overlapping", "implicit_copies", "input_mutation", "output_allocation", "output_initialized_on_entry", "complete_output_write", "hidden_allocation"], "properties": {"rank": {"type": "integer"}, "layout": {"type": "string"}, "standard_contiguous_only": {"type": "boolean"}, "channels_last_supported": {"type": "boolean"}, "equal_qkv_shapes": {"type": "boolean"}, "output_shape_equals_q": {"type": "boolean"}, "output_strides_equal_q": {"type": "boolean"}, "pairwise_non_overlapping": {"type": "boolean"}, "implicit_copies": {"type": "boolean"}, "input_mutation": {"type": "boolean"}, "output_allocation": {"type": "string"}, "output_initialized_on_entry": {"type": "boolean"}, "complete_output_write": {"type": "boolean"}, "hidden_allocation": {"type": "boolean"}}},
+    "abi": {"type": "object", "additionalProperties": false, "required": ["argument_order", "tensor_element_type", "dimension_type", "minimum_alignment_bytes", "input_lifetime", "output_lifetime", "completion"], "properties": {"argument_order": {"type": "array", "minItems": 8, "maxItems": 8, "uniqueItems": true, "items": {"type": "string"}}, "tensor_element_type": {"type": "string"}, "dimension_type": {"type": "string"}, "minimum_alignment_bytes": {"type": "integer", "minimum": 1}, "input_lifetime": {"type": "string"}, "output_lifetime": {"type": "string"}, "completion": {"type": "string"}}},
+    "error": {"type": "object", "additionalProperties": false, "required": ["precedence", "code", "message", "context_keys"], "properties": {"precedence": {"type": "integer", "minimum": 1}, "code": {"type": "string", "pattern": "^KERNEL-[A-Z-]+$"}, "message": {"type": "string", "minLength": 1}, "context_keys": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}}}},
+    "example": {"type": "object", "additionalProperties": false, "required": ["case_id", "purpose", "shape", "q", "k", "v", "expected_output"], "properties": {"case_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"}, "purpose": {"type": "string", "minLength": 1}, "shape": {"$ref": "#/$defs/shape"}, "q": {"type": "array"}, "k": {"type": "array"}, "v": {"type": "array"}, "expected_output": {"type": "array"}}}
+  }
+}

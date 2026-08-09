@@ -11,6 +11,8 @@ Trust-boundary schemas use JSON Schema Draft 2020-12, require `schema_version`, 
 - `foundation-validation-suite.schema.json` fixes the non-recursive Foundation evidence inventory.
 - `ci-tier-policy.schema.json` fixes ordered path/event applicability, prerequisite, artifact, and command declarations for all eight CI tiers.
 - `validation-suite.schema.json` defines Fast v1's immutable ordered inventory, single-case/single-shard cardinality, bounded runner configuration, expected verdict classes, and reproduction argv.
+- `kernel-contract.schema.json` defines the strict v1 attention semantic,
+  supported-domain, memory/ABI, stable-error, and golden-example interface.
 
 The Fast v1 manifest schema fixes 14 ordered `FAST-NNN` checks, one case and `required_count=1` per ID, seed `1601`, and one complete shard. `FAST-014` reserves the externally bootstrapped Agent Loop policy canary. Its three-minute value is a recorded reference-machine target; it never authorizes deselection, skipping, or incomplete execution.
 

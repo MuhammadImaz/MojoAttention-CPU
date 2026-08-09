@@ -305,3 +305,21 @@ human review remain required. A terminal loop is never reopened: human repair
 or a newly approved contract starts a new loop. Story 1.8 owns hosted
 governance auditing, required-check ordering, retention policy, and complete CI
 enforcement.
+
+## Kernel Contract
+
+Validate or inspect the normative Epic 2 attention contract without modifying
+it:
+
+```bash
+scripts/run.sh mojoattention kernel-contract validate \
+  --contract contracts/kernel/kernel-contract.json \
+  --schema schemas/kernel-contract.schema.json \
+  --json -
+scripts/run.sh mojoattention kernel-contract show \
+  --contract contracts/kernel/kernel-contract.json \
+  --schema schemas/kernel-contract.schema.json
+```
+
+The JSON contract is authoritative. `docs/kernel-contract.md` is its verified
+deterministic projection.

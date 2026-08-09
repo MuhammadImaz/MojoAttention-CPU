@@ -43,4 +43,14 @@ activation procedures.
 same eight identities, closes prerequisite tiers, and names the canonical
 manifest, runner, and argv required for activation. A product tier moves from
 `reserved` to `active` only in the same change that supplies its canonical
-implementation; otherwise planning is `contract-invalid`.
+implementation; otherwise planning is `contract-invalid`. Reserved Correctness
+does not claim pre-activation coverage of Kernel Contract/domain-only changes;
+its activation change must add those prefixes while supplying the complete
+manifest and runner.
+
+`kernel/kernel-contract.json` is the normative v1 causal-attention semantic,
+domain, memory, ABI, error, and golden-example authority. Its digest covers
+canonical compact sorted JSON with only `contract_digest` omitted. The
+human-readable `docs/kernel-contract.md` is a deterministic projection, never
+a second authority. Story 2.1's version 2 Acceptance Contract is
+`acceptance/2-1-kernel-contract.json`.
