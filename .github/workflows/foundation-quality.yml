@@ -60,7 +60,7 @@ jobs:
           printf 'trusted_ref=%s\ncandidate_head=%s\nevent_class=%s\n' "${trusted_ref}" "${candidate_head}" "${CI_EVENT_CLASS}" >>"${GITHUB_OUTPUT}"
 
       - name: Check out authenticated trusted base
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.event_identity.outputs.trusted_ref }}
           path: .trusted/base
@@ -174,7 +174,7 @@ jobs:
           PY
 
       - name: Check out exact candidate
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.identity.outputs.candidate_head }}
           path: candidate
