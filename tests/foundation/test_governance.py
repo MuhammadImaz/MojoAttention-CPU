@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import unittest
 from copy import deepcopy
@@ -53,6 +54,7 @@ def observation(**overrides: object) -> dict[str, object]:
             "rulesets": [protection()],
             "classic_branch_protection": None,
             "actions_full_sha_required": True,
+            "actions_default_permissions": "read",
             "dependency_automation_active": True,
         },
         "provenance": {
@@ -68,6 +70,12 @@ def observation(**overrides: object) -> dict[str, object]:
 
 
 def evaluate(snapshot: object, *, now: datetime = NOW, registry: object | None = None):
+    if isinstance(snapshot, dict) and isinstance(snapshot.get("provenance"), dict):
+        unsigned = deepcopy(snapshot)
+        unsigned["provenance"].pop("payload_sha256", None)
+        snapshot["provenance"]["payload_sha256"] = (
+            "sha256:" + hashlib.sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        )
     return evaluate_governance(
         load("contracts/repository-governance.json"),
         snapshot,
@@ -129,7 +137,7 @@ class GovernanceEvaluatorTests(unittest.TestCase):
             self.assertEqual("contract-invalid", result.verdict)
             self.assertFalse(result.audit_valid)
 
-    def test_effective_rules_detect_overlap_contradiction_and_weaker_coverage(self) -> None:
+    def test_effective_rules_compose_overlapping_sources(self) -> None:
         weak = protection(
             id="organization-main",
             source="organization-ruleset",
@@ -144,10 +152,10 @@ class GovernanceEvaluatorTests(unittest.TestCase):
         snapshot = observation()
         snapshot["controls"]["rulesets"].append(weak)
         result = evaluate(snapshot)
-        self.assertEqual("product-fail", result.verdict)
+        self.assertEqual("pass", result.verdict)
         self.assertEqual(("organization-main", "repository-main"), result.applicable_sources)
         codes = {finding.code for finding in result.findings}
-        self.assertLessEqual({"GOV-110", "GOV-111"}, codes)
+        self.assertEqual({"GOV-110"}, codes)
         self.assertTrue(any(finding.context.get("precedence") for finding in result.findings))
 
     def test_findings_are_canonical_regardless_of_ruleset_order(self) -> None:

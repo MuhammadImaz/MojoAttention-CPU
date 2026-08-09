@@ -1008,6 +1008,7 @@ def build_parser() -> argparse.ArgumentParser:
     governance_audit.add_argument("--intent", required=True, metavar="PATH")
     governance_audit.add_argument("--intent-schema", required=True, metavar="PATH")
     governance_audit.add_argument("--observation", required=True, metavar="PATH")
+    governance_audit.add_argument("--expected-observation-digest", required=True, metavar="SHA256")
     governance_audit.add_argument("--observation-schema", required=True, metavar="PATH")
     governance_audit.add_argument("--required-checks", required=True, metavar="PATH")
     governance_audit.add_argument("--required-checks-schema", required=True, metavar="PATH")
@@ -1201,7 +1202,12 @@ def main(argv: list[str] | None = None) -> int:
         registry: object | None = None
         try:
             declared_intent = _read_json(Path(args.intent))
-            observed_state = _read_json(Path(args.observation))
+            observation_path = Path(args.observation)
+            observation_raw = observation_path.read_bytes()
+            actual_observation_digest = "sha256:" + hashlib.sha256(observation_raw).hexdigest()
+            if actual_observation_digest != args.expected_observation_digest:
+                raise ValueError("observation bytes differ from authenticated digest")
+            observed_state = json.loads(observation_raw)
             registry = _read_json(Path(args.required_checks))
             evaluation_time = datetime.fromisoformat(args.evaluation_time.replace("Z", "+00:00"))
             if evaluation_time.tzinfo is None:
