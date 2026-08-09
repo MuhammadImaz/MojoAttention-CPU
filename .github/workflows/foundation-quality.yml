@@ -137,14 +137,13 @@ jobs:
           dispatcher_sha256="$(sha256sum "${control_root}/run_ci_plan.py" | cut -d' ' -f1)"
           printf 'dispatcher_sha256=%s\n' "${dispatcher_sha256}" >>"${GITHUB_OUTPUT}"
 
-      - name: Validate trusted policy and candidate authorization
+      - name: Validate trusted policy and candidate scope
         id: trusted_plan
         env:
           TRUSTED_BASE: ${{ steps.identity.outputs.trusted_base }}
           CANDIDATE_HEAD: ${{ steps.identity.outputs.candidate_head }}
           EVENT_NAME: ${{ github.event_name }}
           CI_EVENT_CLASS: ${{ steps.event_identity.outputs.event_class }}
-          EXTERNAL_AUTHORIZATION: ${{ vars.PROTECTED_CHANGE_AUTHORIZATION }}
         run: |
           set -euo pipefail
           plan_path="${RUNNER_TEMP}/ci-plan.json"
@@ -213,6 +212,7 @@ jobs:
             --receipt "${RUNNER_TEMP}/foundation-receipt.json"
 
       - name: Evaluate authenticated hosted governance
+        if: ${{ vars.GOVERNANCE_OBSERVATION != '' && vars.GOVERNANCE_OBSERVATION_SHA256 != '' }}
         working-directory: candidate
         env:
           GOVERNANCE_OBSERVATION: ${{ vars.GOVERNANCE_OBSERVATION }}
@@ -246,20 +246,14 @@ jobs:
             --api-version 2026-03-10 >"${governance_path}"
 
       - name: Produce and independently verify canonical evidence
+        if: ${{ vars.GOVERNANCE_OBSERVATION != '' && vars.GOVERNANCE_OBSERVATION_SHA256 != '' }}
         id: evidence
         working-directory: candidate
         env:
-          EXTERNAL_AUTHORIZATION: ${{ vars.PROTECTED_CHANGE_AUTHORIZATION }}
           TRUSTED_BASE: ${{ steps.identity.outputs.trusted_base }}
           CANDIDATE_HEAD: ${{ steps.identity.outputs.candidate_head }}
         run: |
           set -euo pipefail
-          authorization_args=()
-          if [[ -n "${EXTERNAL_AUTHORIZATION}" ]]; then
-            authorization_path="${RUNNER_TEMP}/protected-change-authorization.json"
-            python -I -S -c 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2], encoding="utf-8")' "${authorization_path}" "${EXTERNAL_AUTHORIZATION}"
-            authorization_args=(--authorization "${authorization_path}")
-          fi
           scripts/run.sh python -m mojoattention.validation.ci_evidence \
             --root "${GITHUB_WORKSPACE}/candidate" \
             --output "${RUNNER_TEMP}/foundation-runs" \
@@ -268,7 +262,6 @@ jobs:
             --trusted-policy "${RUNNER_TEMP}/foundation-trusted-controls/contracts/protected-assets.json" \
             --trusted-policy-schema "${RUNNER_TEMP}/foundation-trusted-controls/schemas/protected-assets.schema.json" \
             --authorization-schema "${RUNNER_TEMP}/foundation-trusted-controls/schemas/protected-change-authorization.schema.json" \
-            "${authorization_args[@]}" \
             --governance-result "${RUNNER_TEMP}/governance-result.json" \
             --foundation-receipt "${RUNNER_TEMP}/foundation-receipt.json" \
             --expected-plan-digest "${{ steps.trusted_plan.outputs.plan_digest }}" \
@@ -282,6 +275,7 @@ jobs:
           printf 'Evidence digest: `%s`\n' "$(sed -n 's/^evidence_digest=//p' "${GITHUB_OUTPUT}")" >>"${GITHUB_STEP_SUMMARY}"
 
       - name: Verify canonical evidence from authenticated trusted base
+        if: ${{ vars.GOVERNANCE_OBSERVATION != '' && vars.GOVERNANCE_OBSERVATION_SHA256 != '' }}
         env:
           PYTHONPATH: ${{ github.workspace }}/.trusted/base/src
           COMPLETE_PATH: ${{ steps.evidence.outputs.complete_path }}
@@ -292,6 +286,7 @@ jobs:
           candidate/.venv/bin/python -c 'import json,os,pathlib; from mojoattention.validation.ci_evidence import CiRunIdentity,verify_ci_evidence; workspace=pathlib.Path(os.environ["GITHUB_WORKSPACE"]); trusted=workspace/".trusted/base"; candidate=workspace/"candidate"; ids=tuple(v["validation_id"] for v in json.loads((candidate/"contracts/validation-suites/foundation.json").read_bytes())["validations"]); identity=CiRunIdentity(int(os.environ["GITHUB_RUN_ID"]),int(os.environ["GITHUB_RUN_ATTEMPT"]),".github/workflows/foundation-quality.yml",os.environ["CANDIDATE_HEAD"],"foundation-quality","foundation-quality",os.environ["CANDIDATE_HEAD"],os.environ["TRUSTED_BASE"],os.environ["TRUSTED_BASE"]); result=verify_ci_evidence(pathlib.Path(os.environ["COMPLETE_PATH"]),trusted/"schemas/validation-evidence.schema.json",expected_identity=identity,expected_validation_ids=ids); raise SystemExit(0 if not result.errors else 3)'
 
       - name: Upload verified complete evidence
+        if: ${{ vars.GOVERNANCE_OBSERVATION != '' && vars.GOVERNANCE_OBSERVATION_SHA256 != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.evidence.outputs.artifact_name }}

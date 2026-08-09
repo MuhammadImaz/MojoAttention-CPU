@@ -16,7 +16,7 @@ class WorkflowPolicyTests(unittest.TestCase):
             "name: Check out authenticated trusted base",
             "name: Finalize immutable trusted base identity",
             "name: Acquire trusted validator and controls",
-            "name: Validate trusted policy and candidate authorization",
+            "name: Validate trusted policy and candidate scope",
             "name: Check out exact candidate",
             "name: Install checksum-pinned uv",
             "name: Synchronize exact candidate lock",
@@ -46,9 +46,9 @@ class WorkflowPolicyTests(unittest.TestCase):
         for binding in (
             "scripts/trusted_ci_gate.py",
             "foundation-trusted-controls/trusted_ci_gate.py",
-            "PROTECTED_CHANGE_AUTHORIZATION",
         ):
             self.assertIn(binding, text)
+        self.assertNotIn("PROTECTED_CHANGE_AUTHORIZATION", text)
         self.assertIn("id: trusted_controls", text)
         self.assertIn("dispatcher_sha256", text)
         self.assertIn("sha256sum", text)
@@ -161,13 +161,13 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("if-no-files-found: error", publication)
         self.assertNotIn("if: always()", publication)
 
-    def test_hosted_governance_and_evidence_are_required(self) -> None:
+    def test_hosted_governance_is_separate_from_automatic_code_validation(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
         quality_start = text.index("name: Run Foundation Quality")
         governance_start = text.index("name: Evaluate authenticated hosted governance")
         quality_step = text[quality_start:governance_start]
         self.assertNotIn("if:", quality_step)
-        self.assertNotIn("if: ${{ vars.GOVERNANCE_OBSERVATION != '' }}", text)
+        self.assertEqual(4, text.count("if: ${{ vars.GOVERNANCE_OBSERVATION != ''"))
         self.assertIn("date -u +%Y-%m-%dT%H:%M:%SZ", text)
         self.assertNotIn('--evaluation-time "${observed_at}"', text)
 

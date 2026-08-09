@@ -16,7 +16,7 @@ run CI.
 
 `foundation-quality` resolves immutable event identity, checks out the trusted
 base separately, acquires the protected policy and required-check registry,
-validates candidate authorization, checks runner capacity, and only then checks
+validates candidate scope against trusted-base policy, checks runner capacity, and only then checks
 out and executes candidate code. Exact lock synchronization uses the indexes in
 the workflow. The job publishes a canonical `.complete` directory only after
 schema, identity, validation inventory, Markdown projection, and attachment
@@ -104,9 +104,10 @@ verify these hosted operations:
    permissions.
 5. Enable Dependabot for `.github/dependabot.yml` and assign immutable Action
    updates to the listed owner.
-6. Configure the non-secret `GOVERNANCE_OBSERVATION` repository variable from a
-   current authenticated export. Configure `PROTECTED_CHANGE_AUTHORIZATION`
-   only from a separately reviewed, commit-bound human approval envelope.
+6. Configure the non-secret `GOVERNANCE_OBSERVATION` and its independently
+   recorded `GOVERNANCE_OBSERVATION_SHA256` from a current authenticated export.
+   CI validation itself requires no separate authorization envelope; human
+   GitHub review and merge remain the promotion boundary.
 7. Register any larger/self-hosted runner only after calibration against the
    protected runner prerequisites.
 

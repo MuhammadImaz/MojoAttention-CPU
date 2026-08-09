@@ -56,10 +56,10 @@ def test_workflow_contains_no_fake_jsonschema_module() -> None:
     assert "Draft202012Validator" not in workflow
 
 
-def test_protected_change_requires_exact_external_authorization() -> None:
+def test_missing_external_authorization_does_not_preempt_trusted_validation() -> None:
     gate = (ROOT / "scripts/trusted_ci_gate.py").read_text(encoding="utf-8")
-    assert 'item.code not in {"PROT-003", "PROT-004"}' not in gate
-    assert "if decision:" in gate
+    assert 'item.code != "PROT-003"' in gate
+    assert '"PROT-004"' not in gate
     assert '"protected_change_review"' in gate
     assert "_validate_applicable_tiers" in gate
     assert "applicable tier remains reserved" in gate

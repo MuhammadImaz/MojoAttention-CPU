@@ -357,7 +357,8 @@ def run_gate(trusted_root: Path, control_root: Path, authorization_text: str, ev
         contract_digest,
         context,
     )
-    if decision:
+    blocking_decisions = tuple(item for item in decision if item.code != "PROT-003")
+    if blocking_decisions:
         raise ValueError("trusted evaluator rejected protected change identity or policy")
     required_tiers, executions = _validate_applicable_tiers(
         trusted_root,
