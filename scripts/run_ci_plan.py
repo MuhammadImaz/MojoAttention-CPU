@@ -23,6 +23,16 @@ def _canonical_digest(value: dict[str, object], excluded: str) -> str:
     return _sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode())
 
 
+def _untracked_paths(root: Path) -> tuple[str, ...]:
+    result = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    return tuple(sorted(item.decode() for item in result.stdout.split(b"\0") if item))
+
+
 def _verify_product_result(execution: dict[str, object], stdout: bytes, root: Path) -> None:
     manifest = execution.get("manifest")
     if not isinstance(manifest, dict):
@@ -203,6 +213,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         memory_gib = memory_kib / 1024 / 1024
         cpus = os.cpu_count() or 0
+        initial_untracked = _untracked_paths(root)
         for execution in executions:
             if not isinstance(execution, dict):
                 raise ValueError("CI plan execution is invalid")
@@ -225,6 +236,8 @@ def main(argv: list[str] | None = None) -> int:
                 dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=root, check=False).returncode
                 if dirty:
                     raise ValueError("candidate tracked bytes changed after plan authentication")
+                if _untracked_paths(root) != initial_untracked:
+                    raise ValueError("candidate untracked bytes changed after plan authentication")
             if execution.get("tier_id") == "fast":
                 subprocess.run(command, cwd=root, check=True)
             else:
@@ -235,7 +248,10 @@ def main(argv: list[str] | None = None) -> int:
                 ):
                     raise ValueError("product command mutated authenticated candidate bytes")
                 _verify_product_result(execution, completed.stdout, root)
-    except (OSError, TypeError, ValueError, json.JSONDecodeError, subprocess.CalledProcessError) as error:
+    except subprocess.CalledProcessError as error:
+        print(f"CI product execution failed: {error}", file=sys.stderr)
+        return error.returncode if error.returncode in {1, 2, 3, 64} else 1
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         print(f"CI plan execution failed: {error}", file=sys.stderr)
         return 3
     return 0

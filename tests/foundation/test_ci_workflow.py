@@ -49,6 +49,14 @@ class WorkflowPolicyTests(unittest.TestCase):
             "PROTECTED_CHANGE_AUTHORIZATION",
         ):
             self.assertIn(binding, text)
+        self.assertIn("id: trusted_controls", text)
+        self.assertIn("dispatcher_sha256", text)
+        self.assertIn("sha256sum", text)
+        run_step = text[text.index("name: Run Foundation Quality") : text.index("name: Evaluate authenticated")]
+        self.assertIn("steps.trusted_controls.outputs.dispatcher_sha256", run_step)
+        self.assertIn("trusted dispatcher changed after authentication", run_step)
+        self.assertIn("foundation-receipt.json", run_step)
+        self.assertIn('"validations"', run_step)
 
     def test_trusted_control_inventory_and_capacity_fail_closed_are_explicit(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
@@ -130,12 +138,18 @@ class WorkflowPolicyTests(unittest.TestCase):
         ordered = [
             "name: Run Foundation Quality",
             "name: Produce and independently verify canonical evidence",
+            "name: Verify canonical evidence from authenticated trusted base",
             "name: Upload verified complete evidence",
         ]
         positions = [text.index(item) for item in ordered]
         self.assertEqual(sorted(positions), positions)
         publication = text[text.index(ordered[1]) :]
+        self.assertIn('--foundation-receipt "${RUNNER_TEMP}/foundation-receipt.json"', publication)
         self.assertIn("*.complete", publication)
+        trusted_verify = text[text.index(ordered[2]) : text.index(ordered[3])]
+        self.assertIn(".trusted/base/src", trusted_verify)
+        self.assertIn("verify_ci_evidence", trusted_verify)
+        self.assertIn("steps.evidence.outputs.complete_path", trusted_verify)
         self.assertIn("evidence_digest", publication)
         self.assertIn("GITHUB_STEP_SUMMARY", publication)
         self.assertIn("github.run_id", publication)
@@ -146,13 +160,15 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("if-no-files-found: error", publication)
         self.assertNotIn("if: always()", publication)
 
-    def test_hosted_governance_observation_is_optional_for_automated_validation(self) -> None:
+    def test_hosted_governance_and_evidence_are_required(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")
         quality_start = text.index("name: Run Foundation Quality")
         governance_start = text.index("name: Evaluate authenticated hosted governance")
         quality_step = text[quality_start:governance_start]
         self.assertNotIn("if:", quality_step)
-        self.assertEqual(3, text.count("if: ${{ vars.GOVERNANCE_OBSERVATION != '' }}"))
+        self.assertNotIn("if: ${{ vars.GOVERNANCE_OBSERVATION != '' }}", text)
+        self.assertIn("date -u +%Y-%m-%dT%H:%M:%SZ", text)
+        self.assertNotIn('--evaluation-time "${observed_at}"', text)
 
     def test_quality_is_non_recursive_fast_equivalent_and_preserves_foundation_gates(self) -> None:
         quality = (ROOT / "scripts" / "quality.sh").read_text(encoding="utf-8")

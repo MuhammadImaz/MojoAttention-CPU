@@ -13,6 +13,7 @@ from mojoattention.validation.ci_evidence import (
     CiRunIdentity,
     artifact_name,
     load_foundation_manifest,
+    load_foundation_receipt,
     verify_ci_evidence,
 )
 from mojoattention.validation.evidence import EvidenceWriter, canonical_bytes, digest_bytes
@@ -69,6 +70,30 @@ def validation(validation_id: str, case_id: str, attachment: str) -> dict[str, o
 
 
 class CiEvidenceContractTests(unittest.TestCase):
+    def test_foundation_receipt_must_bind_actual_inventory_and_run_identity(self) -> None:
+        manifest = load_foundation_manifest(FOUNDATION_MANIFEST, FOUNDATION_SCHEMA)
+        receipt = {
+            "schema_version": "1.0.0",
+            "verdict": "pass",
+            "head_sha": "1" * 40,
+            "base_sha": "2" * 40,
+            "plan_digest": DIGEST,
+            "dispatcher_digest": "sha256:" + "c" * 64,
+            "command": ["scripts/quality.sh", "--ci"],
+            "validations": [
+                {"validation_id": item["validation_id"], "case_id": item["case_id"], "status": "pass"}
+                for item in manifest["validations"]
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "receipt.json"
+            path.write_bytes(canonical_bytes(receipt, newline=True))
+            self.assertEqual(receipt, load_foundation_receipt(path, manifest, "1" * 40, "2" * 40))
+            receipt["validations"].pop()
+            path.write_bytes(canonical_bytes(receipt, newline=True))
+            with self.assertRaises(ValueError):
+                load_foundation_receipt(path, manifest, "1" * 40, "2" * 40)
+
     def test_foundation_evidence_inventory_is_strict_ordered_and_self_digesting(self) -> None:
         manifest = load_foundation_manifest(FOUNDATION_MANIFEST, FOUNDATION_SCHEMA)
         self.assertEqual("foundation", manifest["suite_id"])

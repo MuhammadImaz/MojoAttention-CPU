@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -64,6 +65,7 @@ class GovernanceObservation:
     status: str
     protections: tuple[ProtectionObservation, ...]
     actions_full_sha_required: bool
+    actions_default_permissions: str
     dependency_automation_active: bool
     provenance_source: str
     provenance_actor: str
@@ -224,6 +226,7 @@ def _parse_observation(raw: dict[str, Any]) -> GovernanceObservation:
         status=raw["status"],
         protections=tuple(sorted(protections, key=lambda item: item.identifier)),
         actions_full_sha_required=controls["actions_full_sha_required"],
+        actions_default_permissions=controls["actions_default_permissions"],
         dependency_automation_active=controls["dependency_automation_active"],
         provenance_source=provenance["source"],
         provenance_actor=provenance["actor"],
@@ -249,6 +252,18 @@ def evaluate_governance(
     maximum_age: timedelta,
 ) -> GovernanceResult:
     """Compare protected intent with an explicit authenticated snapshot without I/O."""
+    unavailable = {"unavailable", "unauthorized", "rate-limited", "network-failure", "incomplete"}
+    if isinstance(observation_record, dict) and observation_record.get("status") in unavailable:
+        return _result(
+            "infrastructure-invalid",
+            [
+                GovernanceError(
+                    "GOV-010",
+                    "hosted governance observation is unavailable",
+                    {"status": observation_record["status"]},
+                )
+            ],
+        )
     findings = _schema_errors(intent_record, intent_schema, "governance intent")
     findings.extend(_schema_errors(observation_record, observation_schema, "governance observation"))
     findings.extend(_schema_errors(required_checks_record, required_checks_schema, "required check registry"))
@@ -281,6 +296,20 @@ def evaluate_governance(
     ]
     if identity_findings:
         return _result("contract-invalid", identity_findings)
+    unsigned_observation = json.loads(json.dumps(observation_record))
+    claimed_payload_digest = unsigned_observation["provenance"].pop("payload_sha256")
+    actual_payload_digest = (
+        "sha256:"
+        + hashlib.sha256(json.dumps(unsigned_observation, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    )
+    if (
+        claimed_payload_digest != actual_payload_digest
+        or "administration:read" not in observation.provenance_permissions
+    ):
+        return _result(
+            "contract-invalid",
+            [GovernanceError("GOV-006", "governance provenance is not bound to an authorized payload", {})],
+        )
     now = observed_at.astimezone(UTC)
     timestamp = observation.observed_at.astimezone(UTC)
     if observation.status != "available":
@@ -312,6 +341,9 @@ def evaluate_governance(
     if not observation.actions_full_sha_required:
         findings.append(GovernanceError("GOV-102", "repository Actions policy does not require full SHA pins", {}))
         human_actions.append("Require full-length commit SHA pins for Actions.")
+    if observation.actions_default_permissions != "read":
+        findings.append(GovernanceError("GOV-104", "default Actions permissions are not read-only", {}))
+        human_actions.append("Set default workflow permissions to read-only.")
     if intent.dependency_automation_required and not observation.dependency_automation_active:
         findings.append(GovernanceError("GOV-103", "dependency automation is not observed active", {}))
         human_actions.append("Activate dependency automation.")
@@ -326,13 +358,17 @@ def evaluate_governance(
             "contract-invalid",
             [GovernanceError("GOV-005", "required check intent is incomplete or conflicting", {"error": str(error)})],
         )
-    for protection in applicable:
+    if applicable:
+        bypass = set(applicable[0].allowed_bypass_actors)
+        for protection in applicable[1:]:
+            bypass.intersection_update(protection.allowed_bypass_actors)
         weak: list[str] = []
-        if intent.strict_checks and not protection.strict_checks:
+        if intent.strict_checks and not any(item.strict_checks for item in applicable):
             weak.append("strict-required-checks")
-        if not expected_checks <= set(protection.checks):
+        effective_checks = {check for item in applicable for check in item.checks}
+        if not expected_checks <= effective_checks:
             weak.append("required-check-inventory-or-source")
-        if protection.minimum_approvals < intent.minimum_approvals:
+        if max(item.minimum_approvals for item in applicable) < intent.minimum_approvals:
             weak.append("minimum-approvals")
         for field in (
             "codeowners_required",
@@ -340,38 +376,23 @@ def evaluate_governance(
             "require_last_push_approval",
             "administrators_enforced",
         ):
-            if getattr(intent, field) and not getattr(protection, field):
+            if getattr(intent, field) and not any(getattr(item, field) for item in applicable):
                 weak.append(field)
-        if set(protection.allowed_bypass_actors) != set(intent.allowed_bypass_actors):
+        if bypass != set(intent.allowed_bypass_actors):
             weak.append("bypass-actors")
         if weak:
             findings.append(
                 GovernanceError(
                     "GOV-111",
-                    "an applicable protection source provides weaker coverage than intent",
-                    {"source": protection.identifier, "controls": sorted(weak)},
+                    "effective applicable protection provides weaker coverage than intent",
+                    {"sources": sorted(source_ids), "controls": sorted(weak)},
                 )
             )
-            human_actions.append(f"Strengthen protection source {protection.identifier}.")
+            human_actions.append("Strengthen effective protection for the default branch.")
     if len(applicable) > 1:
         precedence = [item.identifier for item in sorted(applicable, key=lambda item: (item.source, item.identifier))]
-        signatures = {
-            (
-                item.strict_checks,
-                item.checks,
-                item.minimum_approvals,
-                item.codeowners_required,
-                item.dismiss_stale_reviews,
-                item.require_last_push_approval,
-                item.administrators_enforced,
-                item.allowed_bypass_actors,
-            )
-            for item in applicable
-        }
         context: dict[str, object] = {"sources": sorted(source_ids), "precedence": precedence}
         message = "multiple protection sources overlap on the default branch"
-        if len(signatures) > 1:
-            message += " and contradict one another"
         findings.append(GovernanceError("GOV-110", message, context))
     if any(finding.code != "GOV-110" for finding in findings):
         return _result(

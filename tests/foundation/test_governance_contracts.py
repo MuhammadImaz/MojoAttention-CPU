@@ -99,6 +99,7 @@ class RepositoryGovernanceContractTests(unittest.TestCase):
                 "rulesets": [],
                 "classic_branch_protection": None,
                 "actions_full_sha_required": True,
+                "actions_default_permissions": "read",
                 "dependency_automation_active": True,
             },
             "provenance": {

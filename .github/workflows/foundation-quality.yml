@@ -88,6 +88,7 @@ jobs:
         run: python --version | grep -Fx 'Python 3.14.4'
 
       - name: Acquire trusted validator and controls
+        id: trusted_controls
         env:
           TRUSTED_BASE: ${{ steps.identity.outputs.trusted_base }}
           CANDIDATE_HEAD: ${{ steps.identity.outputs.candidate_head }}
@@ -133,6 +134,8 @@ jobs:
             printf 'story-1-8-bootstrap\n' >"${control_root}/registry-source"
           fi
           chmod -R a-w "${control_root}"
+          dispatcher_sha256="$(sha256sum "${control_root}/run_ci_plan.py" | cut -d' ' -f1)"
+          printf 'dispatcher_sha256=%s\n' "${dispatcher_sha256}" >>"${GITHUB_OUTPUT}"
 
       - name: Validate trusted policy and candidate authorization
         id: trusted_plan
@@ -163,14 +166,16 @@ jobs:
           registry = json.loads(pathlib.Path(sys.argv[1]).read_bytes())
           fast = [tier for tier in registry["tiers"] if tier["tier_id"] == "fast" and tier["activation"] == "active"]
           if len(fast) != 1:
-              raise SystemExit("contract-invalid: active Foundation check identity is ambiguous")
+              print("contract-invalid: active Foundation check identity is ambiguous", file=sys.stderr)
+              raise SystemExit(3)
           required = fast[0]["runner"]
           lines = pathlib.Path("/proc/meminfo").read_text().splitlines()
           memory_kib = int(next(line.split()[1] for line in lines if line.startswith("MemTotal:")))
           memory_gib = memory_kib / 1024 / 1024
           cpus = os.cpu_count() or 0
           if memory_gib < required["minimum_memory_gib"] or cpus < required["minimum_logical_cpus"]:
-              raise SystemExit("infrastructure-invalid: runner capacity is below protected registry prerequisites")
+              print("infrastructure-invalid: runner capacity is below protected registry prerequisites", file=sys.stderr)
+              raise SystemExit(2)
           PY
 
       - name: Check out exact candidate
@@ -194,14 +199,24 @@ jobs:
         run: |
           set -euo pipefail
           plan_path="${RUNNER_TEMP}/ci-plan.json"
-          python -I -S "${RUNNER_TEMP}/foundation-trusted-controls/run_ci_plan.py" \
+          dispatcher_path="${RUNNER_TEMP}/foundation-trusted-controls/run_ci_plan.py"
+          actual_dispatcher_sha256="$(sha256sum "${dispatcher_path}" | cut -d' ' -f1)"
+          test "${actual_dispatcher_sha256}" = "${{ steps.trusted_controls.outputs.dispatcher_sha256 }}" || {
+            echo 'contract-invalid: trusted dispatcher changed after authentication' >&2
+            exit 3
+          }
+          python -I -S "${dispatcher_path}" \
             "${plan_path}" \
             "${{ steps.trusted_plan.outputs.plan_digest }}" \
             "${GITHUB_WORKSPACE}/candidate" \
             "${RUNNER_TEMP}/foundation-trusted-controls"
+          receipt_path="${RUNNER_TEMP}/foundation-receipt.json"
+          python -I -S -c 'import json,pathlib,sys; m=json.loads(pathlib.Path(sys.argv[1]).read_bytes()); r={"schema_version":"1.0.0","verdict":"pass","head_sha":sys.argv[3],"base_sha":sys.argv[4],"plan_digest":sys.argv[5],"dispatcher_digest":"sha256:"+sys.argv[6],"command":["scripts/quality.sh","--ci"],"validations":[{"validation_id":v["validation_id"],"case_id":v["case_id"],"status":"pass"} for v in m["validations"]]}; pathlib.Path(sys.argv[2]).write_text(json.dumps(r,sort_keys=True,separators=(",",":"))+"\n",encoding="utf-8")' \
+            "contracts/validation-suites/foundation.json" "${receipt_path}" \
+            "${{ steps.identity.outputs.candidate_head }}" "${{ steps.identity.outputs.trusted_base }}" \
+            "${{ steps.trusted_plan.outputs.plan_digest }}" "${{ steps.trusted_controls.outputs.dispatcher_sha256 }}"
 
       - name: Evaluate authenticated hosted governance
-        if: ${{ vars.GOVERNANCE_OBSERVATION != '' }}
         working-directory: candidate
         env:
           GOVERNANCE_OBSERVATION: ${{ vars.GOVERNANCE_OBSERVATION }}
@@ -213,7 +228,7 @@ jobs:
           observation_path="${RUNNER_TEMP}/governance-observation.json"
           governance_path="${RUNNER_TEMP}/governance-result.json"
           python -I -S -c 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2], encoding="utf-8")' "${observation_path}" "${GOVERNANCE_OBSERVATION}"
-          observed_at="$(python -I -S -c 'import json,pathlib,sys; print(json.loads(pathlib.Path(sys.argv[1]).read_bytes())["observed_at"])' "${observation_path}")"
+          evaluation_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           scripts/run.sh mojoattention governance audit \
             --intent contracts/repository-governance.json \
             --intent-schema schemas/repository-governance.schema.json \
@@ -225,12 +240,11 @@ jobs:
             --default-branch main \
             --head-sha "${CANDIDATE_HEAD}" \
             --base-sha "${TRUSTED_BASE}" \
-            --evaluation-time "${observed_at}" \
+            --evaluation-time "${evaluation_time}" \
             --maximum-age-seconds 3600 \
             --api-version 2026-03-10 >"${governance_path}"
 
       - name: Produce and independently verify canonical evidence
-        if: ${{ vars.GOVERNANCE_OBSERVATION != '' }}
         id: evidence
         working-directory: candidate
         env:
@@ -255,6 +269,7 @@ jobs:
             --authorization-schema "${RUNNER_TEMP}/foundation-trusted-controls/schemas/protected-change-authorization.schema.json" \
             "${authorization_args[@]}" \
             --governance-result "${RUNNER_TEMP}/governance-result.json" \
+            --foundation-receipt "${RUNNER_TEMP}/foundation-receipt.json" \
             --github-run-id "${{ github.run_id }}" \
             --github-run-attempt "${{ github.run_attempt }}" \
             --workflow-revision "${CANDIDATE_HEAD}" \
@@ -263,8 +278,17 @@ jobs:
             --github-output "${GITHUB_OUTPUT}"
           printf 'Evidence digest: `%s`\n' "$(sed -n 's/^evidence_digest=//p' "${GITHUB_OUTPUT}")" >>"${GITHUB_STEP_SUMMARY}"
 
+      - name: Verify canonical evidence from authenticated trusted base
+        env:
+          PYTHONPATH: ${{ github.workspace }}/.trusted/base/src
+          COMPLETE_PATH: ${{ steps.evidence.outputs.complete_path }}
+          TRUSTED_BASE: ${{ steps.identity.outputs.trusted_base }}
+          CANDIDATE_HEAD: ${{ steps.identity.outputs.candidate_head }}
+        run: |
+          set -euo pipefail
+          candidate/.venv/bin/python -c 'import json,os,pathlib; from mojoattention.validation.ci_evidence import CiRunIdentity,verify_ci_evidence; root=pathlib.Path(os.environ["GITHUB_WORKSPACE"])/".trusted/base"; ids=tuple(v["validation_id"] for v in json.loads((root/"contracts/validation-suites/foundation.json").read_bytes())["validations"]); identity=CiRunIdentity(int(os.environ["GITHUB_RUN_ID"]),int(os.environ["GITHUB_RUN_ATTEMPT"]),".github/workflows/foundation-quality.yml",os.environ["CANDIDATE_HEAD"],"foundation-quality","foundation-quality",os.environ["CANDIDATE_HEAD"],os.environ["TRUSTED_BASE"],os.environ["TRUSTED_BASE"]); result=verify_ci_evidence(pathlib.Path(os.environ["COMPLETE_PATH"]),root/"schemas/validation-evidence.schema.json",expected_identity=identity,expected_validation_ids=ids); raise SystemExit(0 if not result.errors else 3)'
+
       - name: Upload verified complete evidence
-        if: ${{ vars.GOVERNANCE_OBSERVATION != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.evidence.outputs.artifact_name }}

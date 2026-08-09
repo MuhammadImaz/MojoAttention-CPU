@@ -319,10 +319,19 @@ def git_suite_inventories(root: Path, revision: str, policy: dict[str, Any]) -> 
             suite_validator.validate(manifest)
             validations = manifest["validations"]
             ids = tuple(value["validation_id"] for value in validations)
+            unsigned = dict(manifest)
+            claimed_digest = unsigned.pop("manifest_digest")
+            expected_digest = (
+                "sha256:"
+                + hashlib.sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+            )
+            required_total = sum(value["required_count"] for value in validations)
             if (
                 manifest.get("suite_id") == tier_id
                 and ids
                 and len(ids) == len(set(ids))
+                and claimed_digest == expected_digest
+                and manifest.get("required_total") == required_total
                 and all(isinstance(value, str) and re.fullmatch(r"^[A-Z][A-Z0-9]*-[0-9]{3}$", value) for value in ids)
             ):
                 inventories[tier_id] = ids

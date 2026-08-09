@@ -115,6 +115,44 @@ def load_foundation_manifest(manifest_path: Path, schema_path: Path) -> dict[str
         raise ValueError("Foundation evidence inventory is unavailable or invalid") from error
 
 
+def load_foundation_receipt(
+    receipt_path: Path, manifest: dict[str, Any], candidate_head: str, trusted_base: str
+) -> dict[str, Any]:
+    """Load the post-execution receipt that binds evidence claims to the completed gate."""
+    try:
+        receipt = json.loads(receipt_path.read_bytes())
+        if not isinstance(receipt, dict) or set(receipt) != {
+            "schema_version",
+            "verdict",
+            "head_sha",
+            "base_sha",
+            "plan_digest",
+            "dispatcher_digest",
+            "command",
+            "validations",
+        }:
+            raise ValueError("Foundation execution receipt shape is invalid")
+        if (
+            receipt["schema_version"] != "1.0.0"
+            or receipt["verdict"] != "pass"
+            or receipt["head_sha"] != candidate_head
+            or receipt["base_sha"] != trusted_base
+            or receipt["command"] != ["scripts/quality.sh", "--ci"]
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", receipt["plan_digest"])
+            or not re.fullmatch(r"sha256:[0-9a-f]{64}", receipt["dispatcher_digest"])
+        ):
+            raise ValueError("Foundation execution receipt identity or verdict is invalid")
+        expected = [
+            {"validation_id": item["validation_id"], "case_id": item["case_id"], "status": "pass"}
+            for item in manifest["validations"]
+        ]
+        if receipt["validations"] != expected:
+            raise ValueError("Foundation execution receipt inventory is incomplete or reordered")
+        return receipt
+    except (OSError, TypeError, KeyError, json.JSONDecodeError) as error:
+        raise ValueError("Foundation execution receipt is unavailable or invalid") from error
+
+
 def verify_ci_evidence(
     path: Path,
     schema_path: Path | bytes,
@@ -169,6 +207,7 @@ def publish_foundation_evidence(
     authorization_path: Path | None,
     authorization_schema_path: Path,
     governance_result_path: Path,
+    foundation_receipt_path: Path,
     identity: CiRunIdentity,
 ) -> tuple[Path, str, int]:
     """Publish one verified Foundation run from explicit, commit-bound CI inputs."""
@@ -201,6 +240,8 @@ def publish_foundation_evidence(
         root / "contracts/validation-suites/foundation.json",
         root / "schemas/foundation-validation-suite.schema.json",
     )
+    foundation_receipt_raw, _ = _read_object(foundation_receipt_path)
+    load_foundation_receipt(foundation_receipt_path, manifest, candidate_head, trusted_base)
     governance_raw, governance_result = _read_object(governance_result_path)
     if governance_result.get("verdict") != "pass":
         raise ValueError("only a passing, independently evaluated governance audit can publish passing CI evidence")
@@ -264,11 +305,7 @@ def publish_foundation_evidence(
         validations = []
         for item in manifest["validations"]:
             attachment_path = f"diagnostics/{str(item['validation_id']).lower()}.json"
-            attachment_payload = (
-                governance_raw
-                if item["validation_id"] == "FOUND-004"
-                else canonical_bytes({"case_id": item["case_id"], "status": "pass"}, newline=True)
-            )
+            attachment_payload = governance_raw if item["validation_id"] == "FOUND-004" else foundation_receipt_raw
             leaves.append(writer.snapshot_bytes(attachment_payload, attachment_path, "application/json"))
             validations.append(
                 {
@@ -316,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--authorization", type=Path)
     parser.add_argument("--authorization-schema", type=Path, required=True)
     parser.add_argument("--governance-result", type=Path, required=True)
+    parser.add_argument("--foundation-receipt", type=Path, required=True)
     parser.add_argument("--github-run-id", type=int, required=True)
     parser.add_argument("--github-run-attempt", type=int, required=True)
     parser.add_argument("--workflow-revision", required=True)
@@ -345,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
             authorization_path=values.authorization,
             authorization_schema_path=values.authorization_schema,
             governance_result_path=values.governance_result,
+            foundation_receipt_path=values.foundation_receipt,
             identity=identity,
         )
         artifact = artifact_name("foundation-evidence", identity)
