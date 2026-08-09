@@ -116,7 +116,12 @@ def load_foundation_manifest(manifest_path: Path, schema_path: Path) -> dict[str
 
 
 def load_foundation_receipt(
-    receipt_path: Path, manifest: dict[str, Any], candidate_head: str, trusted_base: str
+    receipt_path: Path,
+    manifest: dict[str, Any],
+    candidate_head: str,
+    trusted_base: str,
+    expected_plan_digest: str,
+    expected_dispatcher_digest: str,
 ) -> dict[str, Any]:
     """Load the post-execution receipt that binds evidence claims to the completed gate."""
     try:
@@ -138,8 +143,8 @@ def load_foundation_receipt(
             or receipt["head_sha"] != candidate_head
             or receipt["base_sha"] != trusted_base
             or receipt["command"] != ["scripts/quality.sh", "--ci"]
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", receipt["plan_digest"])
-            or not re.fullmatch(r"sha256:[0-9a-f]{64}", receipt["dispatcher_digest"])
+            or receipt["plan_digest"] != expected_plan_digest
+            or receipt["dispatcher_digest"] != expected_dispatcher_digest
         ):
             raise ValueError("Foundation execution receipt identity or verdict is invalid")
         expected = [
@@ -208,6 +213,8 @@ def publish_foundation_evidence(
     authorization_schema_path: Path,
     governance_result_path: Path,
     foundation_receipt_path: Path,
+    expected_plan_digest: str,
+    expected_dispatcher_digest: str,
     identity: CiRunIdentity,
 ) -> tuple[Path, str, int]:
     """Publish one verified Foundation run from explicit, commit-bound CI inputs."""
@@ -241,7 +248,14 @@ def publish_foundation_evidence(
         root / "schemas/foundation-validation-suite.schema.json",
     )
     foundation_receipt_raw, _ = _read_object(foundation_receipt_path)
-    load_foundation_receipt(foundation_receipt_path, manifest, candidate_head, trusted_base)
+    load_foundation_receipt(
+        foundation_receipt_path,
+        manifest,
+        candidate_head,
+        trusted_base,
+        expected_plan_digest,
+        expected_dispatcher_digest,
+    )
     governance_raw, governance_result = _read_object(governance_result_path)
     if governance_result.get("verdict") != "pass":
         raise ValueError("only a passing, independently evaluated governance audit can publish passing CI evidence")
@@ -354,6 +368,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--authorization-schema", type=Path, required=True)
     parser.add_argument("--governance-result", type=Path, required=True)
     parser.add_argument("--foundation-receipt", type=Path, required=True)
+    parser.add_argument("--expected-plan-digest", required=True)
+    parser.add_argument("--expected-dispatcher-digest", required=True)
     parser.add_argument("--github-run-id", type=int, required=True)
     parser.add_argument("--github-run-attempt", type=int, required=True)
     parser.add_argument("--workflow-revision", required=True)
@@ -384,6 +400,8 @@ def main(argv: list[str] | None = None) -> int:
             authorization_schema_path=values.authorization_schema,
             governance_result_path=values.governance_result,
             foundation_receipt_path=values.foundation_receipt,
+            expected_plan_digest=values.expected_plan_digest,
+            expected_dispatcher_digest=values.expected_dispatcher_digest,
             identity=identity,
         )
         artifact = artifact_name("foundation-evidence", identity)

@@ -23,14 +23,34 @@ def _canonical_digest(value: dict[str, object], excluded: str) -> str:
     return _sha256(json.dumps(unsigned, sort_keys=True, separators=(",", ":")).encode())
 
 
-def _untracked_paths(root: Path) -> tuple[str, ...]:
+def _untracked_state(root: Path) -> tuple[tuple[str, str], ...]:
     result = subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"],
         cwd=root,
         check=True,
         capture_output=True,
     )
-    return tuple(sorted(item.decode() for item in result.stdout.split(b"\0") if item))
+    paths = [item.decode() for item in result.stdout.split(b"\0") if item]
+    ignored = subprocess.run(
+        ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "-z", ".venv", ".tools"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    )
+    paths.extend(
+        item.decode()
+        for item in ignored.stdout.split(b"\0")
+        if item and b"/__pycache__/" not in item and not item.endswith(b".pyc")
+    )
+    paths.sort()
+    return tuple((path, _sha256((root / path).read_bytes())) for path in paths if (root / path).is_file())
+
+
+def _assert_candidate_unchanged(root: Path, initial_untracked: tuple[tuple[str, str], ...]) -> None:
+    if subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=root, check=False).returncode:
+        raise ValueError("candidate tracked bytes changed after plan authentication")
+    if _untracked_state(root) != initial_untracked:
+        raise ValueError("candidate untracked bytes changed after plan authentication")
 
 
 def _verify_product_result(execution: dict[str, object], stdout: bytes, root: Path) -> None:
@@ -166,10 +186,20 @@ def _worktree_identity(root: Path, base: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     values = sys.argv[1:] if argv is None else argv
-    skip_foundation = len(values) == 5 and values[4] == "--foundation-already-ran"
-    if len(values) not in {4, 5} or (len(values) == 5 and not skip_foundation):
+    skip_foundation = "--foundation-already-ran" in values[4:]
+    receipt_path: Path | None = None
+    if "--receipt" in values[4:]:
+        receipt_index = values.index("--receipt", 4)
+        if receipt_index + 1 >= len(values):
+            return 64
+        receipt_path = Path(values[receipt_index + 1])
+    allowed_tail = (["--foundation-already-ran"] if skip_foundation else []) + (
+        ["--receipt", str(receipt_path)] if receipt_path is not None else []
+    )
+    if len(values) < 4 or sorted(values[4:]) != sorted(allowed_tail):
         print(
-            "usage: scripts/run_ci_plan.py PLAN EXPECTED_DIGEST PROJECT_ROOT CONTROL_ROOT [--foundation-already-ran]",
+            "usage: scripts/run_ci_plan.py PLAN EXPECTED_DIGEST PROJECT_ROOT CONTROL_ROOT "
+            "[--foundation-already-ran] [--receipt PATH]",
             file=sys.stderr,
         )
         return 64
@@ -213,7 +243,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         memory_gib = memory_kib / 1024 / 1024
         cpus = os.cpu_count() or 0
-        initial_untracked = _untracked_paths(root)
+        initial_untracked = _untracked_state(root)
+        completed_commands: list[list[str]] = []
         for execution in executions:
             if not isinstance(execution, dict):
                 raise ValueError("CI plan execution is invalid")
@@ -233,21 +264,33 @@ def main(argv: list[str] | None = None) -> int:
             if execution.get("tier_id") == "fast" and skip_foundation:
                 continue
             if plan.get("identity_kind") != "worktree":
-                dirty = subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=root, check=False).returncode
-                if dirty:
-                    raise ValueError("candidate tracked bytes changed after plan authentication")
-                if _untracked_paths(root) != initial_untracked:
-                    raise ValueError("candidate untracked bytes changed after plan authentication")
+                _assert_candidate_unchanged(root, initial_untracked)
             if execution.get("tier_id") == "fast":
                 subprocess.run(command, cwd=root, check=True)
             else:
                 completed = subprocess.run(command, cwd=root, check=True, capture_output=True)
-                if (
-                    plan.get("identity_kind") != "worktree"
-                    and subprocess.run(["git", "diff", "--quiet", "HEAD", "--"], cwd=root, check=False).returncode
-                ):
-                    raise ValueError("product command mutated authenticated candidate bytes")
                 _verify_product_result(execution, completed.stdout, root)
+            if plan.get("identity_kind") != "worktree":
+                _assert_candidate_unchanged(root, initial_untracked)
+            completed_commands.append(command)
+        if receipt_path is not None:
+            foundation = json.loads((root / "contracts/validation-suites/foundation.json").read_bytes())
+            receipt = {
+                "schema_version": "1.0.0",
+                "verdict": "pass",
+                "head_sha": plan["head_revision"],
+                "base_sha": plan["base_revision"],
+                "plan_digest": expected_digest,
+                "dispatcher_digest": _sha256(Path(__file__).read_bytes()),
+                "command": ["scripts/quality.sh", "--ci"],
+                "validations": [
+                    {"validation_id": item["validation_id"], "case_id": item["case_id"], "status": "pass"}
+                    for item in foundation["validations"]
+                ],
+            }
+            if ["scripts/quality.sh", "--ci"] not in completed_commands:
+                raise ValueError("Foundation command was not observed by the trusted dispatcher")
+            receipt_path.write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n")
     except subprocess.CalledProcessError as error:
         print(f"CI product execution failed: {error}", file=sys.stderr)
         return error.returncode if error.returncode in {1, 2, 3, 64} else 1

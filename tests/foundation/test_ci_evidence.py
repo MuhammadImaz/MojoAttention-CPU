@@ -88,11 +88,14 @@ class CiEvidenceContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "receipt.json"
             path.write_bytes(canonical_bytes(receipt, newline=True))
-            self.assertEqual(receipt, load_foundation_receipt(path, manifest, "1" * 40, "2" * 40))
+            self.assertEqual(
+                receipt,
+                load_foundation_receipt(path, manifest, "1" * 40, "2" * 40, DIGEST, "sha256:" + "c" * 64),
+            )
             receipt["validations"].pop()
             path.write_bytes(canonical_bytes(receipt, newline=True))
             with self.assertRaises(ValueError):
-                load_foundation_receipt(path, manifest, "1" * 40, "2" * 40)
+                load_foundation_receipt(path, manifest, "1" * 40, "2" * 40, DIGEST, "sha256:" + "c" * 64)
 
     def test_foundation_evidence_inventory_is_strict_ordered_and_self_digesting(self) -> None:
         manifest = load_foundation_manifest(FOUNDATION_MANIFEST, FOUNDATION_SCHEMA)

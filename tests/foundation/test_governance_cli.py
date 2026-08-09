@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import UTC, datetime
@@ -12,6 +13,9 @@ import pytest
 from mojoattention.cli.main import build_parser, main
 from mojoattention.validation.governance import GovernanceError, GovernanceResult
 
+OBSERVATION_RAW = b'{"state_kind":"observed-hosted-state"}'
+OBSERVATION_DIGEST = "sha256:" + hashlib.sha256(OBSERVATION_RAW).hexdigest()
+
 ARGS = [
     "governance",
     "audit",
@@ -21,6 +25,8 @@ ARGS = [
     "/tmp/repository-governance.schema.json",
     "--observation",
     "/tmp/governance-observation.json",
+    "--expected-observation-digest",
+    OBSERVATION_DIGEST,
     "--observation-schema",
     "/tmp/governance-observation.schema.json",
     "--required-checks",
@@ -59,7 +65,6 @@ def result(verdict: str) -> GovernanceResult:
 def records() -> list[object]:
     return [
         {"state_kind": "configured-intent"},
-        {"state_kind": "observed-hosted-state"},
         {"registry_id": "mojoattention-required-checks"},
     ]
 
@@ -90,6 +95,7 @@ def test_typed_exits_and_canonical_separated_payload(verdict: str, exit_code: in
     stdout, stderr = StringIO(), StringIO()
     with (
         patch("mojoattention.cli.main._read_json", side_effect=records()),
+        patch("pathlib.Path.read_bytes", return_value=OBSERVATION_RAW),
         patch("mojoattention.cli.main.evaluate_governance", return_value=result(verdict)) as evaluate,
         redirect_stdout(stdout),
         redirect_stderr(stderr),
@@ -113,7 +119,7 @@ def test_input_errors_are_bounded_redacted_contract_invalid() -> None:
     stdout, stderr = StringIO(), StringIO()
     secret_args = [value.replace("repository-governance.json", "token=private.json") for value in ARGS]
     with (
-        patch("mojoattention.cli.main._read_json", side_effect=OSError("token=private")),
+        patch("pathlib.Path.read_bytes", side_effect=OSError("token=private")),
         redirect_stdout(stdout),
         redirect_stderr(stderr),
     ):
@@ -126,6 +132,7 @@ def test_input_errors_are_bounded_redacted_contract_invalid() -> None:
 def test_cli_passes_explicit_time_and_identity_without_environment_defaults() -> None:
     with (
         patch("mojoattention.cli.main._read_json", side_effect=records()),
+        patch("pathlib.Path.read_bytes", return_value=OBSERVATION_RAW),
         patch("mojoattention.cli.main.evaluate_governance", return_value=result("pass")) as evaluate,
         redirect_stdout(StringIO()),
     ):

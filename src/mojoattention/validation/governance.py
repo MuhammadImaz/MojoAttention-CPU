@@ -252,18 +252,6 @@ def evaluate_governance(
     maximum_age: timedelta,
 ) -> GovernanceResult:
     """Compare protected intent with an explicit authenticated snapshot without I/O."""
-    unavailable = {"unavailable", "unauthorized", "rate-limited", "network-failure", "incomplete"}
-    if isinstance(observation_record, dict) and observation_record.get("status") in unavailable:
-        return _result(
-            "infrastructure-invalid",
-            [
-                GovernanceError(
-                    "GOV-010",
-                    "hosted governance observation is unavailable",
-                    {"status": observation_record["status"]},
-                )
-            ],
-        )
     findings = _schema_errors(intent_record, intent_schema, "governance intent")
     findings.extend(_schema_errors(observation_record, observation_schema, "governance observation"))
     findings.extend(_schema_errors(required_checks_record, required_checks_schema, "required check registry"))
@@ -391,8 +379,25 @@ def evaluate_governance(
             human_actions.append("Strengthen effective protection for the default branch.")
     if len(applicable) > 1:
         precedence = [item.identifier for item in sorted(applicable, key=lambda item: (item.source, item.identifier))]
-        context: dict[str, object] = {"sources": sorted(source_ids), "precedence": precedence}
+        fields = (
+            "strict_checks",
+            "checks",
+            "minimum_approvals",
+            "codeowners_required",
+            "dismiss_stale_reviews",
+            "require_last_push_approval",
+            "administrators_enforced",
+            "allowed_bypass_actors",
+        )
+        conflicts = [field for field in fields if len({getattr(item, field) for item in applicable}) > 1]
+        context: dict[str, object] = {
+            "sources": sorted(source_ids),
+            "precedence": precedence,
+            "conflicting_fields": conflicts,
+        }
         message = "multiple protection sources overlap on the default branch"
+        if conflicts:
+            message += " with materially different controls"
         findings.append(GovernanceError("GOV-110", message, context))
     if any(finding.code != "GOV-110" for finding in findings):
         return _result(

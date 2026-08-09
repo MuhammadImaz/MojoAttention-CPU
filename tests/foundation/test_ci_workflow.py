@@ -56,7 +56,8 @@ class WorkflowPolicyTests(unittest.TestCase):
         self.assertIn("steps.trusted_controls.outputs.dispatcher_sha256", run_step)
         self.assertIn("trusted dispatcher changed after authentication", run_step)
         self.assertIn("foundation-receipt.json", run_step)
-        self.assertIn('"validations"', run_step)
+        self.assertIn('--receipt "${RUNNER_TEMP}/foundation-receipt.json"', run_step)
+        self.assertNotIn('"status":"pass"', run_step)
 
     def test_trusted_control_inventory_and_capacity_fail_closed_are_explicit(self) -> None:
         text = WORKFLOW.read_text(encoding="utf-8")

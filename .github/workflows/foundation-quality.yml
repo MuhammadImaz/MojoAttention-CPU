@@ -209,30 +209,31 @@ jobs:
             "${plan_path}" \
             "${{ steps.trusted_plan.outputs.plan_digest }}" \
             "${GITHUB_WORKSPACE}/candidate" \
-            "${RUNNER_TEMP}/foundation-trusted-controls"
-          receipt_path="${RUNNER_TEMP}/foundation-receipt.json"
-          python -I -S -c 'import json,pathlib,sys; m=json.loads(pathlib.Path(sys.argv[1]).read_bytes()); r={"schema_version":"1.0.0","verdict":"pass","head_sha":sys.argv[3],"base_sha":sys.argv[4],"plan_digest":sys.argv[5],"dispatcher_digest":"sha256:"+sys.argv[6],"command":["scripts/quality.sh","--ci"],"validations":[{"validation_id":v["validation_id"],"case_id":v["case_id"],"status":"pass"} for v in m["validations"]]}; pathlib.Path(sys.argv[2]).write_text(json.dumps(r,sort_keys=True,separators=(",",":"))+"\n",encoding="utf-8")' \
-            "contracts/validation-suites/foundation.json" "${receipt_path}" \
-            "${{ steps.identity.outputs.candidate_head }}" "${{ steps.identity.outputs.trusted_base }}" \
-            "${{ steps.trusted_plan.outputs.plan_digest }}" "${{ steps.trusted_controls.outputs.dispatcher_sha256 }}"
+            "${RUNNER_TEMP}/foundation-trusted-controls" \
+            --receipt "${RUNNER_TEMP}/foundation-receipt.json"
 
       - name: Evaluate authenticated hosted governance
         working-directory: candidate
         env:
           GOVERNANCE_OBSERVATION: ${{ vars.GOVERNANCE_OBSERVATION }}
+          GOVERNANCE_OBSERVATION_SHA256: ${{ vars.GOVERNANCE_OBSERVATION_SHA256 }}
           TRUSTED_BASE: ${{ steps.identity.outputs.trusted_base }}
           CANDIDATE_HEAD: ${{ steps.identity.outputs.candidate_head }}
         run: |
           set -euo pipefail
           test -n "${GOVERNANCE_OBSERVATION}" || { echo 'infrastructure-invalid: authenticated governance observation is unavailable' >&2; exit 2; }
+          test -n "${GOVERNANCE_OBSERVATION_SHA256}" || { echo 'infrastructure-invalid: governance observation digest is unavailable' >&2; exit 2; }
           observation_path="${RUNNER_TEMP}/governance-observation.json"
           governance_path="${RUNNER_TEMP}/governance-result.json"
           python -I -S -c 'import pathlib,sys; pathlib.Path(sys.argv[1]).write_text(sys.argv[2], encoding="utf-8")' "${observation_path}" "${GOVERNANCE_OBSERVATION}"
+          actual_observation_sha256="sha256:$(sha256sum "${observation_path}" | cut -d' ' -f1)"
+          test "${actual_observation_sha256}" = "${GOVERNANCE_OBSERVATION_SHA256}" || { echo 'contract-invalid: governance observation differs from authenticated digest' >&2; exit 3; }
           evaluation_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           scripts/run.sh mojoattention governance audit \
             --intent contracts/repository-governance.json \
             --intent-schema schemas/repository-governance.schema.json \
             --observation "${observation_path}" \
+            --expected-observation-digest "${GOVERNANCE_OBSERVATION_SHA256}" \
             --observation-schema schemas/governance-observation.schema.json \
             --required-checks contracts/required-checks.json \
             --required-checks-schema schemas/required-checks.schema.json \
@@ -270,6 +271,8 @@ jobs:
             "${authorization_args[@]}" \
             --governance-result "${RUNNER_TEMP}/governance-result.json" \
             --foundation-receipt "${RUNNER_TEMP}/foundation-receipt.json" \
+            --expected-plan-digest "${{ steps.trusted_plan.outputs.plan_digest }}" \
+            --expected-dispatcher-digest "sha256:${{ steps.trusted_controls.outputs.dispatcher_sha256 }}" \
             --github-run-id "${{ github.run_id }}" \
             --github-run-attempt "${{ github.run_attempt }}" \
             --workflow-revision "${CANDIDATE_HEAD}" \
@@ -286,7 +289,7 @@ jobs:
           CANDIDATE_HEAD: ${{ steps.identity.outputs.candidate_head }}
         run: |
           set -euo pipefail
-          candidate/.venv/bin/python -c 'import json,os,pathlib; from mojoattention.validation.ci_evidence import CiRunIdentity,verify_ci_evidence; root=pathlib.Path(os.environ["GITHUB_WORKSPACE"])/".trusted/base"; ids=tuple(v["validation_id"] for v in json.loads((root/"contracts/validation-suites/foundation.json").read_bytes())["validations"]); identity=CiRunIdentity(int(os.environ["GITHUB_RUN_ID"]),int(os.environ["GITHUB_RUN_ATTEMPT"]),".github/workflows/foundation-quality.yml",os.environ["CANDIDATE_HEAD"],"foundation-quality","foundation-quality",os.environ["CANDIDATE_HEAD"],os.environ["TRUSTED_BASE"],os.environ["TRUSTED_BASE"]); result=verify_ci_evidence(pathlib.Path(os.environ["COMPLETE_PATH"]),root/"schemas/validation-evidence.schema.json",expected_identity=identity,expected_validation_ids=ids); raise SystemExit(0 if not result.errors else 3)'
+          candidate/.venv/bin/python -c 'import json,os,pathlib; from mojoattention.validation.ci_evidence import CiRunIdentity,verify_ci_evidence; workspace=pathlib.Path(os.environ["GITHUB_WORKSPACE"]); trusted=workspace/".trusted/base"; candidate=workspace/"candidate"; ids=tuple(v["validation_id"] for v in json.loads((candidate/"contracts/validation-suites/foundation.json").read_bytes())["validations"]); identity=CiRunIdentity(int(os.environ["GITHUB_RUN_ID"]),int(os.environ["GITHUB_RUN_ATTEMPT"]),".github/workflows/foundation-quality.yml",os.environ["CANDIDATE_HEAD"],"foundation-quality","foundation-quality",os.environ["CANDIDATE_HEAD"],os.environ["TRUSTED_BASE"],os.environ["TRUSTED_BASE"]); result=verify_ci_evidence(pathlib.Path(os.environ["COMPLETE_PATH"]),trusted/"schemas/validation-evidence.schema.json",expected_identity=identity,expected_validation_ids=ids); raise SystemExit(0 if not result.errors else 3)'
 
       - name: Upload verified complete evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
