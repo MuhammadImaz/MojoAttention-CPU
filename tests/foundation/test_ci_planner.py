@@ -189,7 +189,7 @@ class CiPlannerTests(unittest.TestCase):
             base_revision=BASE,
             head_revision=HEAD,
         )
-        self.assertEqual(("correctness", "model", "training-smoke", "nightly"), scheduled.required_tiers)
+        self.assertEqual(("fast", "correctness", "model", "training-smoke", "nightly"), scheduled.required_tiers)
         release = ("correctness", "model", "training-smoke", "benchmark-smoke", "release")
         released = plan_ci(
             policy,
@@ -201,7 +201,7 @@ class CiPlannerTests(unittest.TestCase):
             base_revision=BASE,
             head_revision=HEAD,
         )
-        self.assertEqual(release, released.required_tiers)
+        self.assertEqual(("fast", *release), released.required_tiers)
 
     def test_unsafe_rename_source_is_rejected_instead_of_silently_dropped(self) -> None:
         policy, registry = controls()
