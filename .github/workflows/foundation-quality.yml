@@ -204,12 +204,16 @@ jobs:
             echo 'contract-invalid: trusted dispatcher changed after authentication' >&2
             exit 3
           }
+          receipt_args=()
+          if grep -q -- '--receipt' "${dispatcher_path}"; then
+            receipt_args=(--receipt "${RUNNER_TEMP}/foundation-receipt.json")
+          fi
           python -I -S "${dispatcher_path}" \
             "${plan_path}" \
             "${{ steps.trusted_plan.outputs.plan_digest }}" \
             "${GITHUB_WORKSPACE}/candidate" \
             "${RUNNER_TEMP}/foundation-trusted-controls" \
-            --receipt "${RUNNER_TEMP}/foundation-receipt.json"
+            "${receipt_args[@]}"
 
       - name: Evaluate authenticated hosted governance
         if: ${{ vars.GOVERNANCE_OBSERVATION != '' && vars.GOVERNANCE_OBSERVATION_SHA256 != '' }}
