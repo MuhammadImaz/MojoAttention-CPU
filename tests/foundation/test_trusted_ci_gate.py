@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -63,3 +65,22 @@ def test_missing_external_authorization_does_not_preempt_trusted_validation() ->
     assert '"protected_change_review"' in gate
     assert "_validate_applicable_tiers" in gate
     assert "applicable tier remains reserved" in gate
+
+
+def test_trusted_gate_allows_declared_reserved_kernel_contract_precursors() -> None:
+    gate = load_gate()
+    policy = json.loads((ROOT / "contracts/ci-tier-policy.json").read_text(encoding="utf-8"))
+    registry = json.loads((ROOT / "contracts/required-checks.json").read_text(encoding="utf-8"))
+    manifest_schema = json.loads((ROOT / "schemas/product-validation-suite.schema.json").read_text(encoding="utf-8"))
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    effects = (
+        SimpleNamespace(path="contracts/kernel/kernel-contract.json", source_path=None),
+        SimpleNamespace(path="src/mojoattention/domain/kernel_contract.py", source_path=None),
+    )
+    required, executions = gate._validate_applicable_tiers(
+        ROOT, head, effects, policy, registry, registry, "pull-request", manifest_schema
+    )
+    assert required == ("fast",)
+    assert [item["tier_id"] for item in executions] == ["fast"]
