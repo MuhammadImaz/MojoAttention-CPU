@@ -4,7 +4,7 @@
   "contract_version": 1,
   "source_revision": "07d5f9fbb4abc121438e448be000bb3a83f3d8a3",
   "trusted_base_revision": "07d5f9fbb4abc121438e448be000bb3a83f3d8a3",
-  "contract_digest": "sha256:802b16e2767479069fafa6ea4019af6070e198d54666697895d3da3aaaad0b50",
+  "contract_digest": "sha256:3e8b01e05c825dc43c58c262377f02658a3f4149e01f7c516fc7090d0ac243ba",
   "suite_manifest_digest": "sha256:33bc85b47ddc5197b883ffb74d13014c4f943699eac32172d3aef759d4dbdd4f",
   "config_digest": "sha256:98d031cee33f22c697a7d30eb0dd7ebbbd125a3c60d2c7cff4302a3ffe861863",
   "protocol_digest": "sha256:aaa9a53f5785e36444d3248730cea5796b92b6cbf1a991bb582ed84e3a23c7bf",
@@ -14,8 +14,9 @@
   "allowed_paths": ["contracts", "docs", "schemas", "scripts", "src", "tests"],
   "protected_paths": [
     "contracts/acceptance/2-1-kernel-contract.json", "contracts/ci-tier-policy.json", "contracts/kernel", "contracts/protected-assets.json",
-    "schemas/kernel-contract.schema.json", "scripts/quality.sh", "src/mojoattention/cli/main.py",
-    "src/mojoattention/domain", "src/mojoattention/validation/kernel_contract.py", "tests/foundation/test_kernel_contract.py"
+    "schemas/ci-tier-policy.schema.json", "schemas/kernel-contract.schema.json", "scripts/quality.sh", "src/mojoattention/cli/main.py",
+    "src/mojoattention/domain", "src/mojoattention/validation/ci_planner.py", "src/mojoattention/validation/kernel_contract.py",
+    "tests/foundation/test_ci_planner.py", "tests/foundation/test_kernel_contract.py"
   ],
   "generated_outputs": [],
   "required_suites": [

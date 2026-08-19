@@ -29,7 +29,7 @@ def codes(record: object) -> set[str]:
 def test_canonical_contract_and_projection_pass() -> None:
     record = contract()
     assert validate_kernel_contract(record, SCHEMA_PATH) == ()
-    loaded = load_kernel_contract(CONTRACT_PATH, SCHEMA_PATH)
+    loaded = load_kernel_contract(CONTRACT_PATH)
     assert loaded.contract_digest == record["contract_digest"]
     assert compute_kernel_contract_digest(record) == record["contract_digest"]
     assert render_kernel_contract(record) == DOC_PATH.read_text(encoding="utf-8")
@@ -107,22 +107,22 @@ def test_error_registry_is_complete_ordered_and_safe() -> None:
         (lambda item: item.pop("semantics"), "KCON-001"),
         (lambda item: item.update({"schema_version": "2.0.0"}), "KCON-001"),
         (lambda item: item.update({"contract_digest": "sha256:" + "0" * 64}), "KCON-002"),
-        (lambda item: item["supported_domain"].update({"required_total": 29}), "KCON-003"),
-        (lambda item: item["supported_domain"]["shapes"].pop(), "KCON-003"),
-        (lambda item: item["supported_domain"]["head_dimensions"].append(128), "KCON-003"),
-        (lambda item: item["semantics"].update({"softmax_axis": "query-i"}), "KCON-004"),
-        (lambda item: item["semantics"].update({"mask_predicate": "j<i"}), "KCON-004"),
-        (lambda item: item["semantics"].update({"accumulation_dtype": "float64"}), "KCON-004"),
-        (lambda item: item["memory"].update({"implicit_copies": True}), "KCON-005"),
-        (lambda item: item["memory"].update({"pairwise_non_overlapping": False}), "KCON-005"),
-        (lambda item: item["memory"].update({"complete_output_write": False}), "KCON-005"),
-        (lambda item: item["native_abi"]["argument_order"].reverse(), "KCON-006"),
-        (lambda item: item["axes"].reverse(), "KCON-004"),
-        (lambda item: item["supported_domain"].update({"finite_only": False}), "KCON-003"),
-        (lambda item: item["supported_domain"].update({"maximum_absolute_value": 21}), "KCON-003"),
+        (lambda item: item["supported_domain"].update({"required_total": 29}), "KCON-001"),
+        (lambda item: item["supported_domain"]["shapes"].pop(), "KCON-001"),
+        (lambda item: item["supported_domain"]["head_dimensions"].append(128), "KCON-001"),
+        (lambda item: item["semantics"].update({"softmax_axis": "query-i"}), "KCON-001"),
+        (lambda item: item["semantics"].update({"mask_predicate": "j<i"}), "KCON-001"),
+        (lambda item: item["semantics"].update({"accumulation_dtype": "float64"}), "KCON-001"),
+        (lambda item: item["memory"].update({"implicit_copies": True}), "KCON-001"),
+        (lambda item: item["memory"].update({"pairwise_non_overlapping": False}), "KCON-001"),
+        (lambda item: item["memory"].update({"complete_output_write": False}), "KCON-001"),
+        (lambda item: item["native_abi"]["argument_order"].reverse(), "KCON-001"),
+        (lambda item: item["axes"].reverse(), "KCON-001"),
+        (lambda item: item["supported_domain"].update({"finite_only": False}), "KCON-001"),
+        (lambda item: item["supported_domain"].update({"maximum_absolute_value": 21}), "KCON-001"),
         (lambda item: item["errors"].reverse(), "KCON-007"),
-        (lambda item: item["golden_examples"][1]["expected_output"].append(99), "KCON-008"),
-        (lambda item: item["semantics"].update({"score_equation": "wrong"}), "KCON-004"),
+        (lambda item: item["golden_examples"][1].update({"expected_output_sha256": "sha256:" + "0" * 64}), "KCON-008"),
+        (lambda item: item["semantics"].update({"score_equation": "wrong"}), "KCON-001"),
         (lambda item: item["errors"][0].update({"message": "changed"}), "KCON-007"),
         (lambda item: item["errors"][0]["context_keys"].append("address"), "KCON-007"),
         (
@@ -177,3 +177,11 @@ def test_cli_validate_show_and_contract_invalid_exit() -> None:
         temporary.unlink(missing_ok=True)
     assert failed.returncode == 3
     assert json.loads(failed.stdout)["verdict"] == "contract-invalid"
+
+
+@pytest.mark.parametrize("record", [{}, {"contract_digest": "x"}, {"contract_digest": float("nan")}])
+def test_permissive_caller_schema_and_nonfinite_values_fail_stably(record: object, tmp_path: Path) -> None:
+    permissive = tmp_path / "permissive.json"
+    permissive.write_text("{}", encoding="utf-8")
+    errors = validate_kernel_contract(record, permissive)
+    assert errors and errors[0].code == "KCON-001"

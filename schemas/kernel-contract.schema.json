@@ -9,24 +9,91 @@
     "schema_version": {"const": "1.0.0"},
     "contract_id": {"const": "mojoattention-causal-attention"},
     "contract_version": {"const": 1},
-    "contract_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-    "axes": {"type": "array", "minItems": 4, "maxItems": 4, "uniqueItems": true, "items": {"$ref": "#/$defs/axis"}},
+    "contract_digest": {"$ref": "#/$defs/digest"},
+    "axes": {"const": [{"symbol":"B","meaning":"batch"},{"symbol":"H","meaning":"query-key-value-head"},{"symbol":"S","meaning":"query-key-position"},{"symbol":"D","meaning":"head-feature"}]},
     "semantics": {"$ref": "#/$defs/semantics"},
     "supported_domain": {"$ref": "#/$defs/domain"},
     "memory": {"$ref": "#/$defs/memory"},
     "native_abi": {"$ref": "#/$defs/abi"},
-    "errors": {"type": "array", "minItems": 18, "maxItems": 18, "uniqueItems": true, "items": {"$ref": "#/$defs/error"}},
-    "golden_examples": {"type": "array", "minItems": 3, "maxItems": 3, "uniqueItems": true, "items": {"$ref": "#/$defs/example"}}
+    "errors": {"type":"array","minItems":18,"maxItems":18,"uniqueItems":true,"items":{"$ref":"#/$defs/error"}},
+    "golden_examples": {"type":"array","minItems":3,"maxItems":3,"items":{"$ref":"#/$defs/example"}}
   },
   "$defs": {
-    "axis": {"type": "object", "additionalProperties": false, "required": ["symbol", "meaning"], "properties": {"symbol": {"enum": ["B", "H", "S", "D"]}, "meaning": {"type": "string", "minLength": 1}}},
-    "semantics": {"type": "object", "additionalProperties": false, "required": ["score_equation", "mask_predicate", "softmax_axis", "output_equation", "input_q_scaling", "q_is_pre_scaled", "scaling_count", "arithmetic_dtype", "accumulation_dtype", "fully_masked_rows"], "properties": {"score_equation": {"type": "string"}, "mask_predicate": {"type": "string"}, "softmax_axis": {"type": "string"}, "output_equation": {"type": "string"}, "input_q_scaling": {"type": "string"}, "q_is_pre_scaled": {"type": "boolean"}, "scaling_count": {"type": "integer", "minimum": 0}, "arithmetic_dtype": {"type": "string"}, "accumulation_dtype": {"type": "string"}, "fully_masked_rows": {"type": "string"}}},
-    "domain": {"type": "object", "additionalProperties": false, "required": ["device", "dtype", "batch_sizes", "head_counts", "sequence_lengths", "head_dimensions", "finite_only", "maximum_absolute_value", "required_total", "shapes"], "properties": {"device": {"type": "string"}, "dtype": {"type": "string"}, "batch_sizes": {"$ref": "#/$defs/integers"}, "head_counts": {"$ref": "#/$defs/integers"}, "sequence_lengths": {"$ref": "#/$defs/integers"}, "head_dimensions": {"$ref": "#/$defs/integers"}, "finite_only": {"type": "boolean"}, "maximum_absolute_value": {"type": "number", "exclusiveMinimum": 0}, "required_total": {"type": "integer", "minimum": 1}, "shapes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/shape"}}}},
-    "integers": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "integer", "minimum": 1}},
-    "shape": {"type": "object", "additionalProperties": false, "required": ["B", "H", "S", "D"], "properties": {"B": {"type": "integer", "minimum": 1}, "H": {"type": "integer", "minimum": 1}, "S": {"type": "integer", "minimum": 1}, "D": {"type": "integer", "minimum": 1}}},
-    "memory": {"type": "object", "additionalProperties": false, "required": ["rank", "layout", "standard_contiguous_only", "channels_last_supported", "equal_qkv_shapes", "output_shape_equals_q", "output_strides_equal_q", "pairwise_non_overlapping", "implicit_copies", "input_mutation", "output_allocation", "output_initialized_on_entry", "complete_output_write", "hidden_allocation"], "properties": {"rank": {"type": "integer"}, "layout": {"type": "string"}, "standard_contiguous_only": {"type": "boolean"}, "channels_last_supported": {"type": "boolean"}, "equal_qkv_shapes": {"type": "boolean"}, "output_shape_equals_q": {"type": "boolean"}, "output_strides_equal_q": {"type": "boolean"}, "pairwise_non_overlapping": {"type": "boolean"}, "implicit_copies": {"type": "boolean"}, "input_mutation": {"type": "boolean"}, "output_allocation": {"type": "string"}, "output_initialized_on_entry": {"type": "boolean"}, "complete_output_write": {"type": "boolean"}, "hidden_allocation": {"type": "boolean"}}},
-    "abi": {"type": "object", "additionalProperties": false, "required": ["argument_order", "tensor_element_type", "dimension_type", "minimum_alignment_bytes", "input_lifetime", "output_lifetime", "completion"], "properties": {"argument_order": {"type": "array", "minItems": 8, "maxItems": 8, "uniqueItems": true, "items": {"type": "string"}}, "tensor_element_type": {"type": "string"}, "dimension_type": {"type": "string"}, "minimum_alignment_bytes": {"type": "integer", "minimum": 1}, "input_lifetime": {"type": "string"}, "output_lifetime": {"type": "string"}, "completion": {"type": "string"}}},
-    "error": {"type": "object", "additionalProperties": false, "required": ["precedence", "code", "message", "context_keys"], "properties": {"precedence": {"type": "integer", "minimum": 1}, "code": {"type": "string", "pattern": "^KERNEL-[A-Z-]+$"}, "message": {"type": "string", "minLength": 1}, "context_keys": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"}}}},
-    "example": {"type": "object", "additionalProperties": false, "required": ["case_id", "purpose", "shape", "q", "k", "v", "expected_output"], "properties": {"case_id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"}, "purpose": {"type": "string", "minLength": 1}, "shape": {"$ref": "#/$defs/shape"}, "q": {"type": "array"}, "k": {"type": "array"}, "v": {"type": "array"}, "expected_output": {"type": "array"}}}
+    "digest": {"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
+    "semantics": {
+      "type":"object","additionalProperties":false,
+      "required":["score_equation","mask_predicate","softmax_axis","output_equation","input_q_scaling","q_is_pre_scaled","scaling_count","arithmetic_dtype","accumulation_dtype","fully_masked_rows"],
+      "properties": {
+        "score_equation":{"const":"score[b,h,i,j]=sum_d(Q[b,h,i,d]*K[b,h,j,d])/sqrt(D)"},
+        "mask_predicate":{"const":"j>i"},"softmax_axis":{"const":"key-j"},
+        "output_equation":{"const":"O[b,h,i,d]=sum_j<=i(prob[b,h,i,j]*V[b,h,j,d])"},
+        "input_q_scaling":{"const":"unscaled"},"q_is_pre_scaled":{"const":false},"scaling_count":{"const":1},
+        "arithmetic_dtype":{"const":"float32"},"accumulation_dtype":{"const":"float32"},
+        "fully_masked_rows":{"const":"outside-contract"}
+      }
+    },
+    "domain": {
+      "type":"object","additionalProperties":false,
+      "required":["device","dtype","batch_sizes","head_counts","sequence_lengths","head_dimensions","finite_only","maximum_absolute_value","required_total","shapes"],
+      "properties": {
+        "device":{"const":"cpu"},"dtype":{"const":"float32"},"batch_sizes":{"const":[1]},
+        "head_counts":{"const":[2,4]},"sequence_lengths":{"const":[1,16,32,64,128]},
+        "head_dimensions":{"const":[16,32,64]},"finite_only":{"const":true},
+        "maximum_absolute_value":{"const":20},"required_total":{"const":30},
+        "shapes":{"type":"array","minItems":30,"maxItems":30,"uniqueItems":true,"items":{"$ref":"#/$defs/shape"}}
+      }
+    },
+    "shape": {
+      "type":"object","additionalProperties":false,"required":["B","H","S","D"],
+      "properties":{"B":{"const":1},"H":{"enum":[2,4]},"S":{"enum":[1,16,32,64,128]},"D":{"enum":[16,32,64]}}
+    },
+    "memory": {
+      "type":"object","additionalProperties":false,
+      "required":["rank","layout","standard_contiguous_only","channels_last_supported","equal_qkv_shapes","output_shape_equals_q","output_strides_equal_q","pairwise_non_overlapping","implicit_copies","input_mutation","output_allocation","output_initialized_on_entry","complete_output_write","hidden_allocation"],
+      "properties": {
+        "rank":{"const":4},"layout":{"const":"BHSD-row-major"},"standard_contiguous_only":{"const":true},
+        "channels_last_supported":{"const":false},"equal_qkv_shapes":{"const":true},
+        "output_shape_equals_q":{"const":true},"output_strides_equal_q":{"const":true},
+        "pairwise_non_overlapping":{"const":true},"implicit_copies":{"const":false},
+        "input_mutation":{"const":false},"output_allocation":{"const":"pytorch-caller"},
+        "output_initialized_on_entry":{"const":false},"complete_output_write":{"const":true},
+        "hidden_allocation":{"const":false}
+      }
+    },
+    "abi": {
+      "type":"object","additionalProperties":false,
+      "required":["argument_order","tensor_element_type","dimension_type","minimum_alignment_bytes","input_lifetime","output_lifetime","completion"],
+      "properties": {
+        "argument_order":{"const":["q","k","v","out","B","H","S","D"]},
+        "tensor_element_type":{"const":"float32"},"dimension_type":{"const":"int64"},
+        "minimum_alignment_bytes":{"const":4},"input_lifetime":{"const":"borrowed-call-scoped"},
+        "output_lifetime":{"const":"caller-owned"},"completion":{"const":"synchronous-before-return"}
+      }
+    },
+    "error": {
+      "type":"object","additionalProperties":false,"required":["precedence","code","message","context_keys"],
+      "properties":{"precedence":{"type":"integer","minimum":1,"maximum":18},"code":{"type":"string","pattern":"^KERNEL-[A-Z-]+$"},"message":{"type":"string","minLength":1},"context_keys":{"type":"array","uniqueItems":true,"items":{"type":"string","pattern":"^[a-z][a-z0-9_]*$"}}}
+    },
+    "tensor_definition": {
+      "oneOf": [
+        {"type":"object","additionalProperties":false,"required":["kind","value"],"properties":{"kind":{"const":"constant"},"value":{"type":"number","minimum":-20,"maximum":20}}},
+        {"type":"object","additionalProperties":false,"required":["kind","scale","offset"],"properties":{"kind":{"const":"sequence-index"},"scale":{"type":"number","minimum":-1,"maximum":1},"offset":{"type":"number","minimum":-20,"maximum":20}}}
+      ]
+    },
+    "observation": {
+      "type":"object","additionalProperties":false,"required":["index","value"],
+      "properties":{"index":{"type":"array","minItems":4,"maxItems":4,"items":{"type":"integer","minimum":0}},"value":{"type":"number"}}
+    },
+    "example": {
+      "type":"object","additionalProperties":false,
+      "required":["case_id","purpose","shape","q","k","v","expected_output_sha256","observations"],
+      "properties": {
+        "case_id":{"enum":["sequence-one","causal-boundaries","scale-sensitive-d16"]},
+        "purpose":{"type":"string","minLength":1},"shape":{"$ref":"#/$defs/shape"},
+        "q":{"$ref":"#/$defs/tensor_definition"},"k":{"$ref":"#/$defs/tensor_definition"},
+        "v":{"$ref":"#/$defs/tensor_definition"},"expected_output_sha256":{"$ref":"#/$defs/digest"},
+        "observations":{"type":"array","minItems":1,"uniqueItems":true,"items":{"$ref":"#/$defs/observation"}}
+      }
+    }
   }
 }

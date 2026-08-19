@@ -1,7 +1,7 @@
 # MojoAttention Kernel Contract
 
 Contract: `mojoattention-causal-attention` v1
-Digest: `sha256:159af5ccd2b9f70fdf5e04c04af52e1c44bf3758816f22a0df372d08ddab7d43`
+Digest: `sha256:f18088ab796566ff25f1bf140d8080ad58ea16901b47fec7462226048b603fef`
 
 ## Semantics
 
@@ -91,19 +91,34 @@ Digest: `sha256:159af5ccd2b9f70fdf5e04c04af52e1c44bf3758816f22a0df372d08ddab7d43
 
 S=1 proves output equals V
 
-Expected output: `[3]`
+- Shape: `{"B":1,"D":16,"H":2,"S":1}`
+- Q definition: `{"kind":"constant","value":1}`
+- K definition: `{"kind":"constant","value":2}`
+- V definition: `{"kind":"constant","value":3}`
+- Expected output SHA-256 (little-endian float32 BHSD): `sha256:11f2667fd090884e4fccbadb71c96435bfb589537a858b53070f4b8aab365543`
+- Output observations: `[{"index":[0,0,0,0],"value":3}]`
 
-### `two-token-causal`
+### `causal-boundaries`
 
-first query cannot observe the second key or value
+uniform scores make each query equal the mean of current and prior value positions
 
-Expected output: `[3,7.386351]`
+- Shape: `{"B":1,"D":16,"H":2,"S":16}`
+- Q definition: `{"kind":"constant","value":0}`
+- K definition: `{"kind":"constant","value":0}`
+- V definition: `{"kind":"sequence-index","offset":0,"scale":1}`
+- Expected output SHA-256 (little-endian float32 BHSD): `sha256:03e8c05698c1774fbcd114dbe95496f59985e6e809ce6842384eaae94eaf580c`
+- Output observations: `[{"index":[0,0,0,0],"value":0},{"index":[0,0,15,0],"value":7.5}]`
 
 ### `scale-sensitive-d16`
 
 D=16 distinguishes exactly-once square-root scaling
 
-Expected output: `[2,5.928055]`
+- Shape: `{"B":1,"D":16,"H":2,"S":16}`
+- Q definition: `{"kind":"constant","value":1}`
+- K definition: `{"kind":"sequence-index","offset":0,"scale":1}`
+- V definition: `{"kind":"sequence-index","offset":0,"scale":1}`
+- Expected output SHA-256 (little-endian float32 BHSD): `sha256:0f18920ee3907b7e0559576f00e012f5844476de9968d114402b61899773f0a2`
+- Output observations: `[{"index":[0,0,0,0],"value":0},{"index":[0,0,15,0],"value":14.981342315673828}]`
 
 ## Versioning and validation
 

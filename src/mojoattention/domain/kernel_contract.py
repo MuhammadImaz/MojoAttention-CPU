@@ -36,25 +36,28 @@ class KernelContract:
     raw: dict[str, object]
 
 
-def load_kernel_contract(contract_path: Path, schema_path: Path) -> KernelContract:
-    from mojoattention.validation.kernel_contract import validate_kernel_contract
-
+def load_kernel_contract(contract_path: Path) -> KernelContract:
     record: Any = json.loads(contract_path.read_bytes())
-    errors = validate_kernel_contract(record, schema_path)
-    if errors or not isinstance(record, dict):
-        raise ValueError("kernel contract is invalid")
-    domain = record["supported_domain"]
-    assert isinstance(domain, dict)
-    raw_shapes = domain["shapes"]
-    assert isinstance(raw_shapes, list)
-    shapes = tuple(
-        KernelShape(item["B"], item["H"], item["S"], item["D"]) for item in raw_shapes if isinstance(item, dict)
-    )
-    return KernelContract(
-        schema_version=str(record["schema_version"]),
-        contract_id=str(record["contract_id"]),
-        contract_version=int(record["contract_version"]),
-        contract_digest=str(record["contract_digest"]),
-        shapes=shapes,
-        raw=deepcopy(record),
-    )
+    if not isinstance(record, dict):
+        raise ValueError("kernel contract is not an object")
+    try:
+        domain = record["supported_domain"]
+        if not isinstance(domain, dict) or not isinstance(domain["shapes"], list):
+            raise TypeError("kernel contract domain is not structured")
+        shapes = tuple(
+            KernelShape(int(item["B"]), int(item["H"]), int(item["S"]), int(item["D"]))
+            for item in domain["shapes"]
+            if isinstance(item, dict)
+        )
+        if len(shapes) != len(domain["shapes"]):
+            raise TypeError("kernel contract shape is not structured")
+        return KernelContract(
+            schema_version=str(record["schema_version"]),
+            contract_id=str(record["contract_id"]),
+            contract_version=int(record["contract_version"]),
+            contract_digest=str(record["contract_digest"]),
+            shapes=shapes,
+            raw=deepcopy(record),
+        )
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("kernel contract cannot be loaded") from error

@@ -2,7 +2,7 @@
   "schema_version": "1.0.0",
   "contract_id": "mojoattention-causal-attention",
   "contract_version": 1,
-  "contract_digest": "sha256:159af5ccd2b9f70fdf5e04c04af52e1c44bf3758816f22a0df372d08ddab7d43",
+  "contract_digest": "sha256:f18088ab796566ff25f1bf140d8080ad58ea16901b47fec7462226048b603fef",
   "axes": [
     {"symbol": "B", "meaning": "batch"},
     {"symbol": "H", "meaning": "query-key-value-head"},
@@ -72,8 +72,8 @@
     {"precedence":18,"code":"KERNEL-INCOMPLETE-WRITE","message":"native operation did not completely write output","context_keys":["first_unwritten_index"]}
   ],
   "golden_examples": [
-    {"case_id":"sequence-one","purpose":"S=1 proves output equals V","shape":{"B":1,"H":2,"S":1,"D":16},"q":[1],"k":[2],"v":[3],"expected_output":[3]},
-    {"case_id":"two-token-causal","purpose":"first query cannot observe the second key or value","shape":{"B":1,"H":2,"S":16,"D":16},"q":[1,1],"k":[1,2],"v":[3,9],"expected_output":[3,7.386351]},
-    {"case_id":"scale-sensitive-d16","purpose":"D=16 distinguishes exactly-once square-root scaling","shape":{"B":1,"H":2,"S":16,"D":16},"q":[4,0],"k":[0,4],"v":[2,6],"expected_output":[2,5.928055]}
+    {"case_id":"sequence-one","purpose":"S=1 proves output equals V","shape":{"B":1,"H":2,"S":1,"D":16},"q":{"kind":"constant","value":1},"k":{"kind":"constant","value":2},"v":{"kind":"constant","value":3},"expected_output_sha256":"sha256:11f2667fd090884e4fccbadb71c96435bfb589537a858b53070f4b8aab365543","observations":[{"index":[0,0,0,0],"value":3}]},
+    {"case_id":"causal-boundaries","purpose":"uniform scores make each query equal the mean of current and prior value positions","shape":{"B":1,"H":2,"S":16,"D":16},"q":{"kind":"constant","value":0},"k":{"kind":"constant","value":0},"v":{"kind":"sequence-index","scale":1,"offset":0},"expected_output_sha256":"sha256:03e8c05698c1774fbcd114dbe95496f59985e6e809ce6842384eaae94eaf580c","observations":[{"index":[0,0,0,0],"value":0},{"index":[0,0,15,0],"value":7.5}]},
+    {"case_id":"scale-sensitive-d16","purpose":"D=16 distinguishes exactly-once square-root scaling","shape":{"B":1,"H":2,"S":16,"D":16},"q":{"kind":"constant","value":1},"k":{"kind":"sequence-index","scale":1,"offset":0},"v":{"kind":"sequence-index","scale":1,"offset":0},"expected_output_sha256":"sha256:0f18920ee3907b7e0559576f00e012f5844476de9968d114402b61899773f0a2","observations":[{"index":[0,0,0,0],"value":0},{"index":[0,0,15,0],"value":14.981342315673828}]}
   ]
 }

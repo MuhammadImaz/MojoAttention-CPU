@@ -115,6 +115,33 @@ class CiPlannerTests(unittest.TestCase):
         self.assertEqual("pass", complete.verdict)
         self.assertEqual(2, len(complete.commands))
 
+    def test_reserved_correctness_allows_declared_contract_precursors_but_applies_after_activation(self) -> None:
+        policy, registry = controls()
+        change = (Change("M", "contracts/kernel/kernel-contract.json"),)
+        precursor = plan_ci(
+            policy,
+            registry,
+            change,
+            candidate_paths(policy),
+            event_class="pull-request",
+            base_revision=BASE,
+            head_revision=HEAD,
+        )
+        self.assertEqual("pass", precursor.verdict)
+        self.assertEqual(("fast",), precursor.required_tiers)
+        active = plan_ci(
+            policy,
+            activate(registry, "correctness"),
+            change,
+            candidate_paths(policy, "correctness"),
+            inventories("correctness"),
+            event_class="pull-request",
+            base_revision=BASE,
+            head_revision=HEAD,
+        )
+        self.assertEqual("pass", active.verdict)
+        self.assertEqual(("fast", "correctness"), active.required_tiers)
+
     def test_model_training_and_benchmark_changes_close_prerequisite_union(self) -> None:
         policy, registry = controls()
         changes = (
