@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0.0",
+  "contract_id": "mojoattention-causal-attention",
+  "contract_version": 1,
+  "contract_digest": "sha256:f18088ab796566ff25f1bf140d8080ad58ea16901b47fec7462226048b603fef",
+  "axes": [
+    {"symbol": "B", "meaning": "batch"},
+    {"symbol": "H", "meaning": "query-key-value-head"},
+    {"symbol": "S", "meaning": "query-key-position"},
+    {"symbol": "D", "meaning": "head-feature"}
+  ],
+  "semantics": {
+    "score_equation": "score[b,h,i,j]=sum_d(Q[b,h,i,d]*K[b,h,j,d])/sqrt(D)",
+    "mask_predicate": "j>i",
+    "softmax_axis": "key-j",
+    "output_equation": "O[b,h,i,d]=sum_j<=i(prob[b,h,i,j]*V[b,h,j,d])",
+    "input_q_scaling": "unscaled",
+    "q_is_pre_scaled": false,
+    "scaling_count": 1,
+    "arithmetic_dtype": "float32",
+    "accumulation_dtype": "float32",
+    "fully_masked_rows": "outside-contract"
+  },
+  "supported_domain": {
+    "device": "cpu", "dtype": "float32", "batch_sizes": [1], "head_counts": [2, 4],
+    "sequence_lengths": [1, 16, 32, 64, 128], "head_dimensions": [16, 32, 64],
+    "finite_only": true, "maximum_absolute_value": 20, "required_total": 30,
+    "shapes": [
+      {"B":1,"H":2,"S":1,"D":16},{"B":1,"H":2,"S":1,"D":32},{"B":1,"H":2,"S":1,"D":64},
+      {"B":1,"H":2,"S":16,"D":16},{"B":1,"H":2,"S":16,"D":32},{"B":1,"H":2,"S":16,"D":64},
+      {"B":1,"H":2,"S":32,"D":16},{"B":1,"H":2,"S":32,"D":32},{"B":1,"H":2,"S":32,"D":64},
+      {"B":1,"H":2,"S":64,"D":16},{"B":1,"H":2,"S":64,"D":32},{"B":1,"H":2,"S":64,"D":64},
+      {"B":1,"H":2,"S":128,"D":16},{"B":1,"H":2,"S":128,"D":32},{"B":1,"H":2,"S":128,"D":64},
+      {"B":1,"H":4,"S":1,"D":16},{"B":1,"H":4,"S":1,"D":32},{"B":1,"H":4,"S":1,"D":64},
+      {"B":1,"H":4,"S":16,"D":16},{"B":1,"H":4,"S":16,"D":32},{"B":1,"H":4,"S":16,"D":64},
+      {"B":1,"H":4,"S":32,"D":16},{"B":1,"H":4,"S":32,"D":32},{"B":1,"H":4,"S":32,"D":64},
+      {"B":1,"H":4,"S":64,"D":16},{"B":1,"H":4,"S":64,"D":32},{"B":1,"H":4,"S":64,"D":64},
+      {"B":1,"H":4,"S":128,"D":16},{"B":1,"H":4,"S":128,"D":32},{"B":1,"H":4,"S":128,"D":64}
+    ]
+  },
+  "memory": {
+    "rank": 4, "layout": "BHSD-row-major", "standard_contiguous_only": true,
+    "channels_last_supported": false, "equal_qkv_shapes": true, "output_shape_equals_q": true,
+    "output_strides_equal_q": true, "pairwise_non_overlapping": true, "implicit_copies": false,
+    "input_mutation": false, "output_allocation": "pytorch-caller", "output_initialized_on_entry": false,
+    "complete_output_write": true, "hidden_allocation": false
+  },
+  "native_abi": {
+    "argument_order": ["q", "k", "v", "out", "B", "H", "S", "D"],
+    "tensor_element_type": "float32", "dimension_type": "int64", "minimum_alignment_bytes": 4,
+    "input_lifetime": "borrowed-call-scoped", "output_lifetime": "caller-owned",
+    "completion": "synchronous-before-return"
+  },
+  "errors": [
+    {"precedence":1,"code":"KERNEL-DEVICE","message":"tensor device is unsupported","context_keys":["tensor","detected_device","supported_device"]},
+    {"precedence":2,"code":"KERNEL-DTYPE","message":"tensor dtype is unsupported","context_keys":["tensor","detected_dtype","supported_dtype"]},
+    {"precedence":3,"code":"KERNEL-RANK","message":"tensor rank is unsupported","context_keys":["tensor","detected_rank","required_rank"]},
+    {"precedence":4,"code":"KERNEL-SHAPE","message":"Q K and V shapes must match","context_keys":["q_shape","k_shape","v_shape"]},
+    {"precedence":5,"code":"KERNEL-BATCH","message":"batch size is unsupported","context_keys":["detected_batch","supported_batches"]},
+    {"precedence":6,"code":"KERNEL-HEADS","message":"head count is unsupported","context_keys":["detected_heads","supported_heads"]},
+    {"precedence":7,"code":"KERNEL-SEQUENCE","message":"sequence length is unsupported","context_keys":["detected_sequence","supported_sequences"]},
+    {"precedence":8,"code":"KERNEL-DIMENSION","message":"head dimension is unsupported","context_keys":["detected_dimension","supported_dimensions"]},
+    {"precedence":9,"code":"KERNEL-LAYOUT","message":"tensor layout is unsupported","context_keys":["tensor","detected_strides","required_layout"]},
+    {"precedence":10,"code":"KERNEL-NONFINITE","message":"tensor contains a nonfinite element","context_keys":["tensor","index"]},
+    {"precedence":11,"code":"KERNEL-MAGNITUDE","message":"tensor magnitude exceeds the supported bound","context_keys":["tensor","index","maximum_absolute_value"]},
+    {"precedence":12,"code":"KERNEL-INPUT-OVERLAP","message":"input storage ranges overlap","context_keys":["first_tensor","second_tensor"]},
+    {"precedence":13,"code":"KERNEL-OUTPUT-SHAPE","message":"output shape must equal Q shape","context_keys":["detected_shape","required_shape"]},
+    {"precedence":14,"code":"KERNEL-OUTPUT-LAYOUT","message":"output layout must equal Q layout","context_keys":["detected_strides","required_strides"]},
+    {"precedence":15,"code":"KERNEL-OUTPUT-OVERLAP","message":"output storage overlaps an input","context_keys":["input_tensor"]},
+    {"precedence":16,"code":"KERNEL-OWNERSHIP","message":"tensor ownership is unsupported","context_keys":["tensor","required_owner"]},
+    {"precedence":17,"code":"KERNEL-LIFETIME","message":"tensor lifetime is unsupported","context_keys":["tensor","required_lifetime"]},
+    {"precedence":18,"code":"KERNEL-INCOMPLETE-WRITE","message":"native operation did not completely write output","context_keys":["first_unwritten_index"]}
+  ],
+  "golden_examples": [
+    {"case_id":"sequence-one","purpose":"S=1 proves output equals V","shape":{"B":1,"H":2,"S":1,"D":16},"q":{"kind":"constant","value":1},"k":{"kind":"constant","value":2},"v":{"kind":"constant","value":3},"expected_output_sha256":"sha256:11f2667fd090884e4fccbadb71c96435bfb589537a858b53070f4b8aab365543","observations":[{"index":[0,0,0,0],"value":3}]},
+    {"case_id":"causal-boundaries","purpose":"uniform scores make each query equal the mean of current and prior value positions","shape":{"B":1,"H":2,"S":16,"D":16},"q":{"kind":"constant","value":0},"k":{"kind":"constant","value":0},"v":{"kind":"sequence-index","scale":1,"offset":0},"expected_output_sha256":"sha256:03e8c05698c1774fbcd114dbe95496f59985e6e809ce6842384eaae94eaf580c","observations":[{"index":[0,0,0,0],"value":0},{"index":[0,0,15,0],"value":7.5}]},
+    {"case_id":"scale-sensitive-d16","purpose":"D=16 distinguishes exactly-once square-root scaling","shape":{"B":1,"H":2,"S":16,"D":16},"q":{"kind":"constant","value":1},"k":{"kind":"sequence-index","scale":1,"offset":0},"v":{"kind":"sequence-index","scale":1,"offset":0},"expected_output_sha256":"sha256:0f18920ee3907b7e0559576f00e012f5844476de9968d114402b61899773f0a2","observations":[{"index":[0,0,0,0],"value":0},{"index":[0,0,15,0],"value":14.981342315673828}]}
+  ]
+}

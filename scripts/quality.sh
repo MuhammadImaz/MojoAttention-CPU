@@ -14,6 +14,10 @@ export UV_CACHE_DIR="${project_root}/.cache/uv"
 "${project_root}/scripts/run.sh" mojoattention privacy --json -
 "${project_root}/scripts/run.sh" mojoattention authority --json -
 "${project_root}/scripts/run.sh" python scripts/validate_governance_contracts.py
+"${project_root}/scripts/run.sh" mojoattention kernel-contract validate \
+  --contract contracts/kernel/kernel-contract.json \
+  --schema schemas/kernel-contract.schema.json \
+  --json -
 current_revision="$(git rev-parse HEAD)"
 plan_path="$(mktemp "${TMPDIR:-/tmp}/mojoattention-local-ci-plan.XXXXXX")"
 trap 'rm -f -- "${plan_path}"' EXIT

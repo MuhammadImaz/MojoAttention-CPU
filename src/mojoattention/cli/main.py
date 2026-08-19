@@ -67,6 +67,11 @@ from mojoattention.validation.fast_canaries import execute_false_green_canary
 from mojoattention.validation.governance import GovernanceError, GovernanceResult, evaluate_governance
 from mojoattention.validation.host import probe
 from mojoattention.validation.identity import detect_identity, evaluate_identity, require_clean_candidate
+from mojoattention.validation.kernel_contract import (
+    KernelContractError,
+    render_kernel_contract,
+    validate_kernel_contract,
+)
 from mojoattention.validation.paths import contains
 from mojoattention.validation.preflight import evaluate, render_json
 from mojoattention.validation.privacy import find_forbidden_tracked_paths, tracked_paths
@@ -1019,6 +1024,16 @@ def build_parser() -> argparse.ArgumentParser:
     governance_audit.add_argument("--evaluation-time", required=True, metavar="UTC")
     governance_audit.add_argument("--maximum-age-seconds", required=True, type=_positive_integer, metavar="SECONDS")
     governance_audit.add_argument("--api-version", required=True, metavar="VERSION")
+    kernel_contract = commands.add_parser("kernel-contract")
+    kernel_contract_commands = kernel_contract.add_subparsers(
+        dest="kernel_contract_command", required=True, parser_class=ProjectArgumentParser
+    )
+    for name in ("validate", "show"):
+        kernel_contract_command = kernel_contract_commands.add_parser(name)
+        kernel_contract_command.add_argument("--contract", required=True, metavar="PATH")
+        kernel_contract_command.add_argument("--schema", required=True, metavar="PATH")
+        if name == "validate":
+            kernel_contract_command.add_argument("--json", dest="json_path", default="-", metavar="PATH")
     contract = commands.add_parser("contract")
     contract_commands = contract.add_subparsers(
         dest="contract_command",
@@ -1114,6 +1129,32 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "kernel-contract":
+        try:
+            kernel_record = _read_json(Path(args.contract))
+            kernel_errors = validate_kernel_contract(kernel_record, Path(args.schema))
+        except OSError, TypeError, json.JSONDecodeError, ValueError:
+            kernel_record = None
+            kernel_errors = (
+                KernelContractError("KCON-CLI-001", "kernel contract inputs are unavailable or invalid", {}),
+            )
+        if kernel_errors:
+            kernel_payload = {"errors": [asdict(item) for item in kernel_errors], "verdict": "contract-invalid"}
+            if args.kernel_contract_command == "show":
+                for item in kernel_payload["errors"]:
+                    print(json.dumps(item, sort_keys=True, separators=(",", ":")), file=sys.stderr)
+            else:
+                if not _write_payload(canonical_bytes(kernel_payload, newline=True).decode(), args.json_path):
+                    return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+            return EVIDENCE_EXIT_CODES["contract-invalid"]
+        assert isinstance(kernel_record, dict)
+        if args.kernel_contract_command == "show":
+            sys.stdout.write(render_kernel_contract(kernel_record))
+            return 0
+        kernel_payload = {"errors": [], "verdict": "pass"}
+        if not _write_payload(canonical_bytes(kernel_payload, newline=True).decode(), args.json_path):
+            return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+        return 0
     if args.command == "ci":
         assert args.ci_command == "plan"
         try:
