@@ -126,6 +126,8 @@ def _validate_semantics(policy: dict[str, Any], registry: dict[str, Any]) -> Non
     for item in tiers:
         if item["tier_id"] in item["prerequisites"] or not set(item["prerequisites"]) <= known:
             raise ValueError("CI tier prerequisite is unknown or self-referential")
+        if not set(item.get("preactivation_path_prefixes", ())) <= set(item["path_prefixes"]):
+            raise ValueError("CI tier preactivation prefixes must be applicable tier prefixes")
     visiting: set[str] = set()
     visited: set[str] = set()
     graph = {item["tier_id"]: tuple(item["prerequisites"]) for item in tiers}
@@ -176,13 +178,25 @@ def plan_ci(
         raise ValueError("changed path is unsafe or noncanonical")
     tiers = policy["tiers"]
     by_id = {item["tier_id"]: item for item in tiers}
+    registry_by_id = {item["tier_id"]: item for item in registry["tiers"]}
     required: set[str] = set()
     for item in tiers:
         event_matches = event_class in item["event_classes"]
-        path_matches = any(
-            path == prefix or path.startswith(prefix + "/") for prefix in item["path_prefixes"] for path in paths
-        )
+        matching_paths = {
+            path
+            for prefix in item["path_prefixes"]
+            for path in paths
+            if path == prefix or path.startswith(prefix + "/")
+        }
+        path_matches = bool(matching_paths)
         artifact_matches = any(path in item["required_artifacts"] for path in paths)
+        preactivation_prefixes = item.get("preactivation_path_prefixes", [])
+        precursor_only = bool(matching_paths) and all(
+            any(path == prefix or path.startswith(prefix + "/") for prefix in preactivation_prefixes)
+            for path in matching_paths
+        )
+        if registry_by_id[item["tier_id"]]["activation"] != "active" and precursor_only and not artifact_matches:
+            continue
         if artifact_matches or (event_matches and (path_matches or not item["path_prefixes"])):
             required.add(item["tier_id"])
 
@@ -195,7 +209,6 @@ def plan_ci(
     for tier_id in tuple(required):
         add_prerequisites(tier_id)
 
-    registry_by_id = {item["tier_id"]: item for item in registry["tiers"]}
     findings: list[PlannerFinding] = []
     commands: list[tuple[str, ...]] = []
     executions: list[TierExecution] = []
