@@ -15,6 +15,8 @@ from pathlib import Path, PurePosixPath
 from typing import Any, NoReturn
 
 from mojoattention.config import ProjectPolicy
+from mojoattention.domain.kernel_cases import generate_case, matrix_entries
+from mojoattention.domain.kernel_contract import load_kernel_contract
 from mojoattention.validation.acceptance import ContractContext, ContractError, validate_contract
 from mojoattention.validation.agent_loop import (
     SEMANTIC_STOP_FAILURES,
@@ -67,6 +69,7 @@ from mojoattention.validation.fast_canaries import execute_false_green_canary
 from mojoattention.validation.governance import GovernanceError, GovernanceResult, evaluate_governance
 from mojoattention.validation.host import probe
 from mojoattention.validation.identity import detect_identity, evaluate_identity, require_clean_candidate
+from mojoattention.validation.kernel_cases import KernelCaseError, validate_matrix
 from mojoattention.validation.kernel_contract import (
     KernelContractError,
     render_kernel_contract,
@@ -1034,6 +1037,20 @@ def build_parser() -> argparse.ArgumentParser:
         kernel_contract_command.add_argument("--schema", required=True, metavar="PATH")
         if name == "validate":
             kernel_contract_command.add_argument("--json", dest="json_path", default="-", metavar="PATH")
+    kernel_cases = commands.add_parser("kernel-cases")
+    kernel_cases_commands = kernel_cases.add_subparsers(
+        dest="kernel_cases_command", required=True, parser_class=ProjectArgumentParser
+    )
+    kernel_cases_validate = kernel_cases_commands.add_parser("validate")
+    kernel_cases_validate.add_argument("--matrix", required=True, metavar="PATH")
+    kernel_cases_validate.add_argument("--schema", required=True, metavar="PATH")
+    kernel_cases_validate.add_argument("--contract", required=True, metavar="PATH")
+    kernel_cases_validate.add_argument("--json", dest="json_path", default="-", metavar="PATH")
+    kernel_cases_generate = kernel_cases_commands.add_parser("generate")
+    kernel_cases_generate.add_argument("--contract", required=True, metavar="PATH")
+    kernel_cases_generate.add_argument("--case-id", required=True, metavar="ID")
+    kernel_cases_generate.add_argument("--seed", required=True, type=int, metavar="INTEGER")
+    kernel_cases_generate.add_argument("--json", dest="json_path", default="-", metavar="PATH")
     contract = commands.add_parser("contract")
     contract_commands = contract.add_subparsers(
         dest="contract_command",
@@ -1129,6 +1146,59 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.command == "kernel-cases":
+        try:
+            case_contract = load_kernel_contract(Path(args.contract))
+            if args.kernel_cases_command == "validate":
+                case_record = _read_json(Path(args.matrix))
+                case_errors = validate_matrix(case_record, Path(args.schema), case_contract)
+                case_payload: dict[str, object] = {
+                    "errors": [asdict(item) for item in case_errors],
+                    "verdict": "contract-invalid" if case_errors else "pass",
+                }
+            else:
+                entry = next(item for item in matrix_entries(case_contract) if item.case_id == args.case_id)
+                generated = generate_case(entry.shape, entry.kind, args.seed)
+                shape = {
+                    "B": entry.shape.batch,
+                    "H": entry.shape.heads,
+                    "S": entry.shape.sequence,
+                    "D": entry.shape.head_dimension,
+                }
+                case_payload = {
+                    "case_id": generated.case_id,
+                    "generator": {"id": "mojoattention-counter-sha256", "version": 1},
+                    "kernel_contract_digest": case_contract.contract_digest,
+                    "shape": shape,
+                    "bounds": {"minimum": -20.0, "maximum": 20.0},
+                    "seed": generated.seed,
+                    "serialization": "little-endian-float32-contiguous-BHSD",
+                    "tensors": {
+                        "q": {"bytes": len(generated.q), "sha256": generated.q_sha256},
+                        "k": {"bytes": len(generated.k), "sha256": generated.k_sha256},
+                        "v": {"bytes": len(generated.v), "sha256": generated.v_sha256},
+                    },
+                    "reproduction_argv": [
+                        "mojoattention",
+                        "kernel-cases",
+                        "generate",
+                        "--contract",
+                        args.contract,
+                        "--case-id",
+                        args.case_id,
+                        "--seed",
+                        str(args.seed),
+                        "--json",
+                        "-",
+                    ],
+                    "verdict": "pass",
+                }
+        except OSError, StopIteration, TypeError, json.JSONDecodeError, ValueError:
+            case_errors = (KernelCaseError("KCASE-CLI-001", "kernel case request is unavailable or invalid", {}),)
+            case_payload = {"errors": [asdict(item) for item in case_errors], "verdict": "contract-invalid"}
+        if not _write_payload(canonical_bytes(case_payload, newline=True).decode(), args.json_path):
+            return EVIDENCE_EXIT_CODES["infrastructure-invalid"]
+        return EVIDENCE_EXIT_CODES[str(case_payload["verdict"])]
     if args.command == "kernel-contract":
         try:
             kernel_record = _read_json(Path(args.contract))

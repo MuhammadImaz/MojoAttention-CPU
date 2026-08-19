@@ -18,12 +18,12 @@
     {"category": "golden-data", "paths": ["fixtures/golden"]},
     {"category": "required-check-policy", "paths": ["contracts/ci-tier-policy.json", "contracts/required-checks.json", "contracts/repository-governance.json", "contracts/validation-suites", "scripts/quality.sh", "scripts/run_ci_plan.py", "scripts/validate_governance_contracts.py"]},
     {"category": "generated-outputs", "paths": [".gitignore", "reports/README.md", "reports/release"]},
-    {"category": "reference-oracles", "paths": ["contracts/kernel/kernel-contract.json", "docs/kernel-contract.md", "src/mojoattention/backends/pytorch", "src/mojoattention/domain/kernel_contract.py"]},
+    {"category": "reference-oracles", "paths": ["contracts/kernel/kernel-contract.json", "contracts/kernel/kernel-case-matrix.json", "docs/kernel-contract.md", "docs/kernel-cases.md", "src/mojoattention/backends/pytorch", "src/mojoattention/domain/kernel_contract.py", "src/mojoattention/domain/kernel_cases.py"]},
     {"category": "acceptance-contracts", "paths": ["contracts/acceptance"]},
     {"category": "ownership-metadata", "paths": ["contracts/ownership.json"]},
     {"category": "protected-policy", "paths": ["contracts/protected-assets.json"]},
     {"category": "authorization-controls", "paths": ["src/mojoattention/validation/acceptance.py"]},
-    {"category": "protected-evaluator", "paths": ["src/mojoattention/cli/main.py", "src/mojoattention/validation/agent_loop.py", "src/mojoattention/validation/ci_evidence.py", "src/mojoattention/validation/ci_planner.py", "src/mojoattention/validation/evidence.py", "src/mojoattention/validation/fast.py", "src/mojoattention/validation/fast_canaries.py", "src/mojoattention/validation/governance.py", "src/mojoattention/validation/kernel_contract.py", "src/mojoattention/validation/protected_assets.py", "src/mojoattention/validation/paths.py", "scripts/run.sh", "scripts/trusted_ci_gate.py"]}
+    {"category": "protected-evaluator", "paths": ["src/mojoattention/cli/main.py", "src/mojoattention/validation/agent_loop.py", "src/mojoattention/validation/ci_evidence.py", "src/mojoattention/validation/ci_planner.py", "src/mojoattention/validation/evidence.py", "src/mojoattention/validation/fast.py", "src/mojoattention/validation/fast_canaries.py", "src/mojoattention/validation/governance.py", "src/mojoattention/validation/kernel_contract.py", "src/mojoattention/validation/kernel_cases.py", "src/mojoattention/validation/protected_assets.py", "src/mojoattention/validation/paths.py", "scripts/run.sh", "scripts/trusted_ci_gate.py"]}
   ],
   "generated_rules": [],
   "remediation": "Obtain external human authorization bound to this exact trusted base, candidate commit, policy blob, change-set digest, and protected path set."
