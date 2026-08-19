@@ -1,0 +1,155 @@
+{
+  "schema_version": "2.0.0",
+  "contract_id": "story-2-2-kernel-cases",
+  "contract_version": 1,
+  "source_revision": "a3c2682b7469dfac76c6bf25d11ecc136ea7382a",
+  "trusted_base_revision": "a3c2682b7469dfac76c6bf25d11ecc136ea7382a",
+  "contract_digest": "sha256:86b1223b4110896e0e8b3a95141e890590aa54c7565a08fd1e0933be74b08382",
+  "suite_manifest_digest": "sha256:33bc85b47ddc5197b883ffb74d13014c4f943699eac32172d3aef759d4dbdd4f",
+  "config_digest": "sha256:98d031cee33f22c697a7d30eb0dd7ebbbd125a3c60d2c7cff4302a3ffe861863",
+  "protocol_digest": "sha256:aaa9a53f5785e36444d3248730cea5796b92b6cbf1a991bb582ed84e3a23c7bf",
+  "requirement_ids": [
+    "FR10",
+    "NFR9",
+    "NFR10"
+  ],
+  "capability_ids": [
+    "CAP-4",
+    "CAP-5",
+    "CAP-8"
+  ],
+  "exclusions": [
+    "pytorch-reference",
+    "mojo-kernel",
+    "runtime-dispatch",
+    "tolerance-calibration",
+    "performance"
+  ],
+  "allowed_paths": [
+    "contracts",
+    "docs",
+    "schemas",
+    "scripts",
+    "src",
+    "tests"
+  ],
+  "protected_paths": [
+    "contracts/acceptance/2-2-kernel-cases.json",
+    "contracts/kernel/kernel-case-matrix.json",
+    "contracts/protected-assets.json",
+    "schemas/kernel-case-matrix.schema.json",
+    "scripts/quality.sh",
+    "src/mojoattention/cli/main.py",
+    "src/mojoattention/domain/kernel_cases.py",
+    "src/mojoattention/validation/kernel_cases.py",
+    "tests/foundation/test_kernel_cases.py"
+  ],
+  "generated_outputs": [],
+  "required_suites": [
+    {
+      "suite_id": "fast",
+      "validations": [
+        {
+          "validation_id": "FAST-001",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-002",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-003",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-004",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-005",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-006",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-007",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-008",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-009",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-010",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-011",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-012",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-013",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-014",
+          "required_count": 1
+        }
+      ],
+      "required_total": 14
+    },
+    {
+      "suite_id": "foundation",
+      "validations": [
+        {
+          "validation_id": "FOUND-001",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FOUND-002",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FOUND-003",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FOUND-004",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FOUND-005",
+          "required_count": 1
+        }
+      ],
+      "required_total": 5
+    }
+  ],
+  "referenced_digests": {
+    "tolerance": null,
+    "baseline": null,
+    "workload": null,
+    "protocol": "sha256:aaa9a53f5785e36444d3248730cea5796b92b6cbf1a991bb582ed84e3a23c7bf"
+  },
+  "retry_budget": 5,
+  "prior_validation_identity": null,
+  "stop_conditions": [
+    "scope-expansion",
+    "validation-weakening",
+    "protected-conflict",
+    "non-improving-retry",
+    "nondeterminism"
+  ],
+  "authorization_id": "story-2-2-protected-change"
+}
+

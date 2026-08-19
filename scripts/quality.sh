@@ -18,6 +18,11 @@ export UV_CACHE_DIR="${project_root}/.cache/uv"
   --contract contracts/kernel/kernel-contract.json \
   --schema schemas/kernel-contract.schema.json \
   --json -
+"${project_root}/scripts/run.sh" mojoattention kernel-cases validate \
+  --matrix contracts/kernel/kernel-case-matrix.json \
+  --schema schemas/kernel-case-matrix.schema.json \
+  --contract contracts/kernel/kernel-contract.json \
+  --json -
 current_revision="$(git rev-parse HEAD)"
 plan_path="$(mktemp "${TMPDIR:-/tmp}/mojoattention-local-ci-plan.XXXXXX")"
 trap 'rm -f -- "${plan_path}"' EXIT
