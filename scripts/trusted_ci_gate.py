@@ -213,12 +213,24 @@ def _validate_applicable_tiers(
     ):
         raise ValueError("changed path is unsafe or noncanonical")
     by_id = {item["tier_id"]: item for item in tier_policy["tiers"]}
+    candidate_by_id = {item["tier_id"]: item for item in candidate_tiers}
     required: set[str] = set()
     for item in tier_policy["tiers"]:
-        path_match = any(
-            path == prefix or path.startswith(prefix + "/") for prefix in item["path_prefixes"] for path in paths
-        )
+        matching_paths = {
+            path
+            for prefix in item["path_prefixes"]
+            for path in paths
+            if path == prefix or path.startswith(prefix + "/")
+        }
+        path_match = bool(matching_paths)
         artifact_match = any(path in item["required_artifacts"] for path in paths)
+        preactivation_prefixes = item.get("preactivation_path_prefixes", [])
+        precursor_only = bool(matching_paths) and all(
+            any(path == prefix or path.startswith(prefix + "/") for prefix in preactivation_prefixes)
+            for path in matching_paths
+        )
+        if candidate_by_id[item["tier_id"]]["activation"] != "active" and precursor_only and not artifact_match:
+            continue
         if artifact_match or (event_class in item["event_classes"] and (path_match or not item["path_prefixes"])):
             required.add(item["tier_id"])
 
@@ -237,7 +249,6 @@ def _validate_applicable_tiers(
         capture_output=True,
     ).stdout
     available = {item.decode("utf-8") for item in tree.split(b"\0") if item}
-    candidate_by_id = {item["tier_id"]: item for item in candidate_tiers}
     executions: list[dict[str, object]] = []
     for tier_id in (item["tier_id"] for item in tier_policy["tiers"] if item["tier_id"] in required):
         if candidate_by_id[tier_id]["activation"] != "active":
