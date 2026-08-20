@@ -115,13 +115,15 @@ def test_invalid_inputs_stop_before_dispatch(
     assert_exact_contract_error(result, code)
     assert result.dispatched is False
     assert spy.calls == 0
-    assert all(torch.equal(value, original) for value, original in zip((q, k, v, out), originals, strict=True))
+    for value, original in zip((q, k, v, out), originals, strict=True):
+        torch.testing.assert_close(value, original, equal_nan=True)
 
 
 def test_nonfinite_magnitude_and_precedence_are_stable() -> None:
     q, k, v, out = valid()
     q[0, 0, 0, 0] = torch.nan
     q[0, 0, 0, 1] = 21
+    originals = tuple(value.clone() for value in (q, k, v, out))
     spy = DispatchSpy()
     result = validate_and_dispatch(q, k, v, out, CONTRACT, spy)
     assert result.error is not None
@@ -131,6 +133,8 @@ def test_nonfinite_magnitude_and_precedence_are_stable() -> None:
         {"tensor": "q", "index": [0, 0, 0, 0]},
     )
     assert spy.calls == 0
+    for value, original in zip((q, k, v, out), originals, strict=True):
+        torch.testing.assert_close(value, original, equal_nan=True)
 
 
 def test_magnitude_output_shape_and_output_layout_fail_before_dispatch() -> None:
@@ -169,11 +173,12 @@ def test_partial_input_storage_overlap_stops_before_dispatch() -> None:
     q = storage[:count].view(shape)
     k = storage[count // 2 :].view(shape)
     v, out = valid()[2:]
+    originals = tuple(value.clone() for value in (q, k, v, out))
     spy = DispatchSpy()
     result = validate_and_dispatch(q, k, v, out, CONTRACT, spy)
-    assert result.error is not None and result.error.code == "KERNEL-INPUT-OVERLAP"
-    assert result.error.context == {"first_tensor": "q", "second_tensor": "k"}
+    assert_exact_contract_error(result, "KERNEL-INPUT-OVERLAP")
     assert spy.calls == 0
+    assert all(torch.equal(value, original) for value, original in zip((q, k, v, out), originals, strict=True))
 
 
 def test_external_buffer_overlap_with_distinct_storage_bases_stops_before_dispatch() -> None:
@@ -183,6 +188,7 @@ def test_external_buffer_overlap_with_distinct_storage_bases_stops_before_dispat
     q = torch.frombuffer(memoryview(backing)[:byte_count], dtype=torch.float32).view(shape)
     k = torch.frombuffer(memoryview(backing)[256:], dtype=torch.float32).view(shape)
     v, out = valid()[2:]
+    originals = tuple(value.clone() for value in (q, k, v, out))
     spy = DispatchSpy()
     result = validate_and_dispatch(q, k, v, out, CONTRACT, spy)
     assert result.error is not None
@@ -192,11 +198,14 @@ def test_external_buffer_overlap_with_distinct_storage_bases_stops_before_dispat
         {"first_tensor": "q", "second_tensor": "k"},
     )
     assert spy.calls == 0
+    assert all(torch.equal(value, original) for value, original in zip((q, k, v, out), originals, strict=True))
 
 
 def test_opaque_and_lazy_negative_layouts_are_rejected_stably() -> None:
     q, k, v, out = valid()
     for invalid in (q.to_mkldnn(), torch._neg_view(q)):
+        invalid_original = invalid.to_dense().clone() if invalid.is_mkldnn else invalid.clone()
+        originals = tuple(value.clone() for value in (k, v, out))
         spy = DispatchSpy()
         result = validate_and_dispatch(invalid, k, v, out, CONTRACT, spy)
         assert result.error is not None
@@ -206,6 +215,9 @@ def test_opaque_and_lazy_negative_layouts_are_rejected_stably() -> None:
             "q",
         )
         assert spy.calls == 0
+        observed = invalid.to_dense() if invalid.is_mkldnn else invalid
+        assert torch.equal(observed, invalid_original)
+        assert all(torch.equal(value, original) for value, original in zip((k, v, out), originals, strict=True))
 
 
 def test_zero_stride_and_channels_last_like_layouts_are_rejected() -> None:
@@ -213,10 +225,19 @@ def test_zero_stride_and_channels_last_like_layouts_are_rejected() -> None:
     zero_stride = torch.zeros((1, 2, 16, 1)).expand(1, 2, 16, 16)
     channels_last = q.contiguous(memory_format=torch.channels_last)
     for invalid in (zero_stride, channels_last):
+        originals = tuple(value.clone() for value in (invalid, k, v, out))
         spy = DispatchSpy()
         result = validate_and_dispatch(invalid, k, v, out, CONTRACT, spy)
-        assert result.error is not None and result.error.code == "KERNEL-LAYOUT"
+        assert result.error is not None
+        assert (result.error.code, result.error.message, result.error.context) == (
+            "KERNEL-LAYOUT",
+            "tensor layout is unsupported",
+            {"tensor": "q", "detected_strides": list(invalid.stride()), "required_layout": "BHSD-row-major"},
+        )
         assert spy.calls == 0
+        assert all(
+            torch.equal(value, original) for value, original in zip((invalid, k, v, out), originals, strict=True)
+        )
 
 
 def test_non_tensor_is_rejected_as_unsupported_ownership() -> None:
@@ -234,11 +255,17 @@ def test_non_tensor_is_rejected_as_unsupported_ownership() -> None:
 
 def test_meta_device_is_rejected_before_dispatch() -> None:
     _, k, v, out = valid()
+    originals = tuple(value.clone() for value in (k, v, out))
     spy = DispatchSpy()
     result = validate_and_dispatch(torch.empty((1, 2, 16, 16), device="meta"), k, v, out, CONTRACT, spy)
     assert result.error is not None
-    assert result.error.context == {"tensor": "q", "detected_device": "meta", "supported_device": "cpu"}
+    assert (result.error.code, result.error.message, result.error.context) == (
+        "KERNEL-DEVICE",
+        "tensor device is unsupported",
+        {"tensor": "q", "detected_device": "meta", "supported_device": "cpu"},
+    )
     assert spy.calls == 0
+    assert all(torch.equal(value, original) for value, original in zip((k, v, out), originals, strict=True))
 
 
 def test_contract_digest_tampering_is_a_stable_authority_failure() -> None:
@@ -295,7 +322,12 @@ def test_valid_dispatch_once_and_incomplete_write_detected() -> None:
     q, k, v, out = valid()
     incomplete = DispatchSpy(write=False)
     failed = validate_and_dispatch(q, k, v, out, CONTRACT, incomplete)
-    assert failed.error is not None and failed.error.code == "KERNEL-INCOMPLETE-WRITE"
+    assert failed.error is not None
+    assert (failed.error.code, failed.error.message, failed.error.context) == (
+        "KERNEL-INCOMPLETE-WRITE",
+        "native operation did not completely write output",
+        {"first_unwritten_index": [0, 0, 0, 0]},
+    )
     assert incomplete.calls == 1
 
 
