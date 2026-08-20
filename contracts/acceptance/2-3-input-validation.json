@@ -1,0 +1,155 @@
+{
+  "schema_version": "2.0.0",
+  "contract_id": "story-2-3-input-validation",
+  "contract_version": 1,
+  "source_revision": "5cdeb5ca66db1378afb434248f8f818a4e747137",
+  "trusted_base_revision": "5cdeb5ca66db1378afb434248f8f818a4e747137",
+  "contract_digest": "sha256:ecb94edeb260745d50985306812d4d556f8c4c8ba6ef9c222f91cdf0b8459e0f",
+  "suite_manifest_digest": "sha256:33bc85b47ddc5197b883ffb74d13014c4f943699eac32172d3aef759d4dbdd4f",
+  "config_digest": "sha256:98d031cee33f22c697a7d30eb0dd7ebbbd125a3c60d2c7cff4302a3ffe861863",
+  "protocol_digest": "sha256:aaa9a53f5785e36444d3248730cea5796b92b6cbf1a991bb582ed84e3a23c7bf",
+  "requirement_ids": [
+    "FR12",
+    "NFR1",
+    "NFR3",
+    "NFR13"
+  ],
+  "capability_ids": [
+    "CAP-4",
+    "CAP-5"
+  ],
+  "exclusions": [
+    "pytorch-reference",
+    "mojo-kernel",
+    "native-execution",
+    "fallback",
+    "attention-computation",
+    "tolerance-calibration",
+    "output-allocation",
+    "performance"
+  ],
+  "allowed_paths": [
+    "contracts",
+    "docs",
+    "schemas",
+    "scripts",
+    "src",
+    "tests"
+  ],
+  "protected_paths": [
+    "contracts/acceptance/2-3-input-validation.json",
+    "contracts/protected-assets.json",
+    "docs/input-validation.md",
+    "src/mojoattention/domain/attention.py",
+    "src/mojoattention/validation/attention_inputs.py",
+    "tests/foundation/test_attention_inputs.py"
+  ],
+  "generated_outputs": [],
+  "required_suites": [
+    {
+      "suite_id": "fast",
+      "validations": [
+        {
+          "validation_id": "FAST-001",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-002",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-003",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-004",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-005",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-006",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-007",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-008",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-009",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-010",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-011",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-012",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-013",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FAST-014",
+          "required_count": 1
+        }
+      ],
+      "required_total": 14
+    },
+    {
+      "suite_id": "foundation",
+      "validations": [
+        {
+          "validation_id": "FOUND-001",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FOUND-002",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FOUND-003",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FOUND-004",
+          "required_count": 1
+        },
+        {
+          "validation_id": "FOUND-005",
+          "required_count": 1
+        }
+      ],
+      "required_total": 5
+    }
+  ],
+  "referenced_digests": {
+    "tolerance": null,
+    "baseline": null,
+    "workload": null,
+    "protocol": "sha256:aaa9a53f5785e36444d3248730cea5796b92b6cbf1a991bb582ed84e3a23c7bf"
+  },
+  "retry_budget": 5,
+  "prior_validation_identity": null,
+  "stop_conditions": [
+    "scope-expansion",
+    "validation-weakening",
+    "protected-conflict",
+    "non-improving-retry",
+    "nondeterminism"
+  ],
+  "authorization_id": "story-2-3-protected-change"
+}
+
