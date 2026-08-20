@@ -214,10 +214,10 @@ def test_opaque_and_lazy_negative_layouts_are_rejected_stably() -> None:
         spy = DispatchSpy()
         result = validate_and_dispatch(invalid, k, v, out, CONTRACT, spy)
         assert result.error is not None
-        assert (result.error.code, result.error.message, result.error.context["tensor"]) == (
+        assert (result.error.code, result.error.message, result.error.context) == (
             "KERNEL-LAYOUT",
             "tensor layout is unsupported",
-            "q",
+            {"tensor": "q", "detected_strides": list(invalid.stride()), "required_layout": "BHSD-row-major"},
         )
         assert spy.calls == 0
         observed = invalid.to_dense() if invalid.is_mkldnn else invalid
@@ -245,6 +245,7 @@ def test_zero_stride_and_channels_last_like_layouts_are_rejected() -> None:
 
 def test_non_tensor_is_rejected_as_unsupported_ownership() -> None:
     _, k, v, out = valid()
+    originals = tuple(value.clone() for value in (k, v, out))
     spy = DispatchSpy()
     result = validate_and_dispatch(cast(torch.Tensor, object()), k, v, out, CONTRACT, spy)
     assert result.error is not None
@@ -254,6 +255,7 @@ def test_non_tensor_is_rejected_as_unsupported_ownership() -> None:
         {"tensor": "q", "required_owner": "pytorch-caller"},
     )
     assert spy.calls == 0
+    assert_unchanged((k, v, out), originals)
 
 
 def test_meta_device_is_rejected_before_dispatch() -> None:
