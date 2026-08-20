@@ -48,9 +48,32 @@ def _require_bound_authority(contract: KernelContract) -> None:
     try:
         recorded = contract.raw["contract_digest"]
         computed = compute_kernel_contract_digest(contract.raw)
+        raw_shapes = contract.raw["supported_domain"]
+        if not isinstance(raw_shapes, dict) or not isinstance(raw_shapes["shapes"], list):
+            raise TypeError
+        typed_shapes = tuple(
+            (shape.batch, shape.heads, shape.sequence, shape.head_dimension) for shape in contract.shapes
+        )
+        recorded_shapes = tuple(
+            (int(shape["B"]), int(shape["H"]), int(shape["S"]), int(shape["D"]))
+            for shape in raw_shapes["shapes"]
+            if isinstance(shape, dict)
+        )
     except (KeyError, TypeError, ValueError) as error:
         raise KernelContractAuthorityError("kernel contract authority is invalid") from error
-    if recorded != contract.contract_digest or recorded != computed or recorded != _PROTECTED_CONTRACT_DIGEST:
+    metadata_matches = (
+        contract.schema_version == contract.raw.get("schema_version")
+        and contract.contract_id == contract.raw.get("contract_id")
+        and contract.contract_version == contract.raw.get("contract_version")
+        and len(recorded_shapes) == len(raw_shapes["shapes"])
+        and typed_shapes == recorded_shapes
+    )
+    if (
+        recorded != contract.contract_digest
+        or recorded != computed
+        or recorded != _PROTECTED_CONTRACT_DIGEST
+        or not metadata_matches
+    ):
         raise KernelContractAuthorityError("kernel contract digest does not bind canonical content")
 
 

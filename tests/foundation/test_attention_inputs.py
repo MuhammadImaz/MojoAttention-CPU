@@ -10,7 +10,11 @@ import torch
 
 from mojoattention.domain.kernel_cases import CaseMatrixEntry, generate_case, matrix_entries
 from mojoattention.domain.kernel_contract import KernelContract, compute_kernel_contract_digest, load_kernel_contract
-from mojoattention.validation.attention_inputs import KernelContractAuthorityError, validate_and_dispatch
+from mojoattention.validation.attention_inputs import (
+    AttentionValidationResult,
+    KernelContractAuthorityError,
+    validate_and_dispatch,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = load_kernel_contract(ROOT / "contracts/kernel/kernel-contract.json")
@@ -35,6 +39,15 @@ class IdentityDispatch(DispatchSpy):
     def __call__(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, out: torch.Tensor) -> None:
         self.arguments = (q, k, v, out)
         super().__call__(q, k, v, out)
+
+
+def assert_exact_contract_error(result: object, code: str) -> None:
+    validation = cast("AttentionValidationResult", result)
+    authority = next(item for item in cast(list[dict[str, object]], CONTRACT.raw["errors"]) if item["code"] == code)
+    assert validation.error is not None
+    assert validation.error.code == code
+    assert validation.error.message == authority["message"]
+    assert list(validation.error.context) == authority["context_keys"]
 
 
 def valid() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -76,7 +89,7 @@ def test_invalid_inputs_stop_before_dispatch(
     originals = tuple(value.clone() for value in (q, k, v, out))
     spy = DispatchSpy()
     result = validate_and_dispatch(q, k, v, out, CONTRACT, spy)
-    assert result.error is not None and result.error.code == code
+    assert_exact_contract_error(result, code)
     assert result.dispatched is False
     assert spy.calls == 0
     assert all(torch.equal(value, original) for value, original in zip((q, k, v, out), originals, strict=True))
@@ -109,7 +122,7 @@ def test_magnitude_output_shape_and_output_layout_fail_before_dispatch() -> None
     for values, expected in cases:
         spy = DispatchSpy()
         result = validate_and_dispatch(*values, CONTRACT, spy)
-        assert result.error is not None and result.error.code == expected
+        assert_exact_contract_error(result, expected)
         assert spy.calls == 0
 
 
@@ -118,7 +131,7 @@ def test_input_and_output_aliases_stop_before_dispatch() -> None:
     for values, expected in (((q, q, v, out), "KERNEL-INPUT-OVERLAP"), ((q, k, v, q), "KERNEL-OUTPUT-OVERLAP")):
         spy = DispatchSpy()
         result = validate_and_dispatch(*values, CONTRACT, spy)
-        assert result.error is not None and result.error.code == expected
+        assert_exact_contract_error(result, expected)
         assert spy.calls == 0
 
 
@@ -232,6 +245,19 @@ def test_self_consistent_alternate_contract_is_not_authoritative() -> None:
     )
     with pytest.raises(KernelContractAuthorityError, match="kernel contract digest does not bind canonical content"):
         validate_and_dispatch(*valid(), alternate, DispatchSpy())
+
+
+def test_mixed_typed_contract_metadata_is_not_authoritative() -> None:
+    mixed = KernelContract(
+        CONTRACT.schema_version,
+        CONTRACT.contract_id,
+        999,
+        CONTRACT.contract_digest,
+        CONTRACT.shapes,
+        deepcopy(CONTRACT.raw),
+    )
+    with pytest.raises(KernelContractAuthorityError, match="kernel contract digest does not bind canonical content"):
+        validate_and_dispatch(*valid(), mixed, DispatchSpy())
 
 
 def test_valid_dispatch_once_and_incomplete_write_detected() -> None:
