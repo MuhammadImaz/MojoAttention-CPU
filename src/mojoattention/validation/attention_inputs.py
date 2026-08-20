@@ -7,6 +7,7 @@ import torch
 from mojoattention.domain.attention import AttentionDispatch
 from mojoattention.domain.kernel_contract import KernelContract, compute_kernel_contract_digest
 
+_PROTECTED_CONTRACT_DIGEST = "sha256:f18088ab796566ff25f1bf140d8080ad58ea16901b47fec7462226048b603fef"
 _UNWRITTEN_F32_BITS = 0x7FC01234
 
 
@@ -49,7 +50,7 @@ def _require_bound_authority(contract: KernelContract) -> None:
         computed = compute_kernel_contract_digest(contract.raw)
     except (KeyError, TypeError, ValueError) as error:
         raise KernelContractAuthorityError("kernel contract authority is invalid") from error
-    if recorded != contract.contract_digest or recorded != computed:
+    if recorded != contract.contract_digest or recorded != computed or recorded != _PROTECTED_CONTRACT_DIGEST:
         raise KernelContractAuthorityError("kernel contract digest does not bind canonical content")
 
 
@@ -58,10 +59,8 @@ def _shape(value: torch.Tensor) -> list[int]:
 
 
 def _ranges_overlap(left: torch.Tensor, right: torch.Tensor) -> bool:
-    if left.untyped_storage().data_ptr() != right.untyped_storage().data_ptr():
-        return False
-    left_start = left.storage_offset() * left.element_size()
-    right_start = right.storage_offset() * right.element_size()
+    left_start = left.untyped_storage().data_ptr() + left.storage_offset() * left.element_size()
+    right_start = right.untyped_storage().data_ptr() + right.storage_offset() * right.element_size()
     left_end = left_start + left.numel() * left.element_size()
     right_end = right_start + right.numel() * right.element_size()
     return left_start < right_end and right_start < left_end
@@ -79,11 +78,6 @@ def _first_excess(value: torch.Tensor, maximum: float) -> list[int] | None:
 
 def _has_standard_storage(value: torch.Tensor) -> bool:
     return value.layout is torch.strided and not value.is_conj() and not value.is_neg()
-
-
-def _first_unwritten(value: torch.Tensor) -> list[int] | None:
-    positions = (value.view(torch.int32) == _UNWRITTEN_F32_BITS).nonzero()
-    return positions[0].tolist() if positions.numel() else None
 
 
 def validate_and_dispatch(
@@ -198,7 +192,7 @@ def validate_and_dispatch(
     with torch.inference_mode():
         out.view(torch.int32).fill_(_UNWRITTEN_F32_BITS)
         dispatch(q, k, v, out)
-    if (index := _first_unwritten(out)) is not None:
+    if (index := _first_nonfinite(out)) is not None:
         return AttentionValidationResult(
             _error(contract, "KERNEL-INCOMPLETE-WRITE", {"first_unwritten_index": index}), True
         )

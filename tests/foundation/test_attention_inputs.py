@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from mojoattention.domain.kernel_cases import CaseMatrixEntry, generate_case, matrix_entries
-from mojoattention.domain.kernel_contract import KernelContract, load_kernel_contract
+from mojoattention.domain.kernel_contract import KernelContract, compute_kernel_contract_digest, load_kernel_contract
 from mojoattention.validation.attention_inputs import KernelContractAuthorityError, validate_and_dispatch
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -136,6 +136,24 @@ def test_partial_input_storage_overlap_stops_before_dispatch() -> None:
     assert spy.calls == 0
 
 
+def test_external_buffer_overlap_with_distinct_storage_bases_stops_before_dispatch() -> None:
+    shape = (1, 2, 16, 16)
+    byte_count = 1 * 2 * 16 * 16 * 4
+    backing = bytearray(byte_count + 256)
+    q = torch.frombuffer(memoryview(backing)[:byte_count], dtype=torch.float32).view(shape)
+    k = torch.frombuffer(memoryview(backing)[256:], dtype=torch.float32).view(shape)
+    v, out = valid()[2:]
+    spy = DispatchSpy()
+    result = validate_and_dispatch(q, k, v, out, CONTRACT, spy)
+    assert result.error is not None
+    assert (result.error.code, result.error.message, result.error.context) == (
+        "KERNEL-INPUT-OVERLAP",
+        "input storage ranges overlap",
+        {"first_tensor": "q", "second_tensor": "k"},
+    )
+    assert spy.calls == 0
+
+
 def test_opaque_and_lazy_negative_layouts_are_rejected_stably() -> None:
     q, k, v, out = valid()
     for invalid in (q.to_mkldnn(), torch._neg_view(q)):
@@ -200,6 +218,22 @@ def test_contract_digest_tampering_is_a_stable_authority_failure() -> None:
         validate_and_dispatch(*valid(), tampered, DispatchSpy())
 
 
+def test_self_consistent_alternate_contract_is_not_authoritative() -> None:
+    raw = deepcopy(CONTRACT.raw)
+    raw["contract_version"] = 999
+    raw["contract_digest"] = compute_kernel_contract_digest(raw)
+    alternate = KernelContract(
+        CONTRACT.schema_version,
+        CONTRACT.contract_id,
+        999,
+        cast(str, raw["contract_digest"]),
+        CONTRACT.shapes,
+        raw,
+    )
+    with pytest.raises(KernelContractAuthorityError, match="kernel contract digest does not bind canonical content"):
+        validate_and_dispatch(*valid(), alternate, DispatchSpy())
+
+
 def test_valid_dispatch_once_and_incomplete_write_detected() -> None:
     q, k, v, out = valid()
     spy = DispatchSpy()
@@ -221,13 +255,14 @@ def test_grad_and_inference_outputs_are_writable_at_the_native_boundary() -> Non
     assert validate_and_dispatch(q, k, v, inference_out, CONTRACT, DispatchSpy()).error is None
 
 
-def test_fully_written_nonfinite_output_is_not_incomplete() -> None:
+def test_nonfinite_native_output_cannot_satisfy_complete_write() -> None:
     class NonfiniteDispatch:
         def __call__(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, out: torch.Tensor) -> None:
             out.fill_(torch.nan)
 
     result = validate_and_dispatch(*valid(), CONTRACT, NonfiniteDispatch())
-    assert result.error is None and result.dispatched is True
+    assert result.error is not None and result.error.code == "KERNEL-INCOMPLETE-WRITE"
+    assert result.dispatched is True
 
 
 @pytest.mark.parametrize("entry", matrix_entries(CONTRACT), ids=lambda entry: entry.case_id)
