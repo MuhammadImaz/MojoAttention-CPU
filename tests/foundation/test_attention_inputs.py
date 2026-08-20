@@ -18,6 +18,28 @@ from mojoattention.validation.attention_inputs import (
 
 ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = load_kernel_contract(ROOT / "contracts/kernel/kernel-contract.json")
+EXPECTED_CONTEXTS: dict[str, dict[str, object]] = {
+    "KERNEL-DTYPE": {"tensor": "q", "detected_dtype": "float64", "supported_dtype": "float32"},
+    "KERNEL-RANK": {"tensor": "q", "detected_rank": 3, "required_rank": 4},
+    "KERNEL-SHAPE": {
+        "q_shape": [1, 2, 16, 16],
+        "k_shape": [1, 2, 1, 16],
+        "v_shape": [1, 2, 16, 16],
+    },
+    "KERNEL-BATCH": {"detected_batch": 2, "supported_batches": [1]},
+    "KERNEL-HEADS": {"detected_heads": 1, "supported_heads": [2, 4]},
+    "KERNEL-SEQUENCE": {"detected_sequence": 2, "supported_sequences": [1, 16, 32, 64, 128]},
+    "KERNEL-DIMENSION": {"detected_dimension": 15, "supported_dimensions": [16, 32, 64]},
+    "KERNEL-LAYOUT": {"tensor": "q", "detected_strides": [512, 256, 1, 16], "required_layout": "BHSD-row-major"},
+    "KERNEL-MAGNITUDE": {"tensor": "q", "index": [0, 0, 0, 0], "maximum_absolute_value": 20.0},
+    "KERNEL-OUTPUT-SHAPE": {"detected_shape": [1, 2, 1, 16], "required_shape": [1, 2, 16, 16]},
+    "KERNEL-OUTPUT-LAYOUT": {
+        "detected_strides": [512, 256, 1, 16],
+        "required_strides": [512, 256, 16, 1],
+    },
+    "KERNEL-INPUT-OVERLAP": {"first_tensor": "q", "second_tensor": "k"},
+    "KERNEL-OUTPUT-OVERLAP": {"input_tensor": "q"},
+}
 
 
 class DispatchSpy:
@@ -47,6 +69,7 @@ def assert_exact_contract_error(result: object, code: str) -> None:
     assert validation.error is not None
     assert validation.error.code == code
     assert validation.error.message == authority["message"]
+    assert validation.error.context == EXPECTED_CONTEXTS[code]
     assert list(validation.error.context) == authority["context_keys"]
 
 
@@ -120,19 +143,23 @@ def test_magnitude_output_shape_and_output_layout_fail_before_dispatch() -> None
     q2, k2, v2, out2 = valid()
     cases.append(((q2, k2, v2, out2.transpose(-1, -2)), "KERNEL-OUTPUT-LAYOUT"))
     for values, expected in cases:
+        originals = tuple(value.clone() for value in values)
         spy = DispatchSpy()
         result = validate_and_dispatch(*values, CONTRACT, spy)
         assert_exact_contract_error(result, expected)
         assert spy.calls == 0
+        assert all(torch.equal(value, original) for value, original in zip(values, originals, strict=True))
 
 
 def test_input_and_output_aliases_stop_before_dispatch() -> None:
     q, k, v, out = valid()
     for values, expected in (((q, q, v, out), "KERNEL-INPUT-OVERLAP"), ((q, k, v, q), "KERNEL-OUTPUT-OVERLAP")):
+        originals = tuple(value.clone() for value in values)
         spy = DispatchSpy()
         result = validate_and_dispatch(*values, CONTRACT, spy)
         assert_exact_contract_error(result, expected)
         assert spy.calls == 0
+        assert all(torch.equal(value, original) for value, original in zip(values, originals, strict=True))
 
 
 def test_partial_input_storage_overlap_stops_before_dispatch() -> None:
