@@ -73,6 +73,11 @@ def assert_exact_contract_error(result: object, code: str) -> None:
     assert list(validation.error.context) == authority["context_keys"]
 
 
+def assert_unchanged(values: tuple[torch.Tensor, ...], originals: tuple[torch.Tensor, ...]) -> None:
+    for value, original in zip(values, originals, strict=True):
+        torch.testing.assert_close(value, original, equal_nan=True)
+
+
 def valid() -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     return tuple(torch.zeros((1, 2, 16, 16), dtype=torch.float32) for _ in range(4))  # type: ignore[return-value]
 
@@ -152,7 +157,7 @@ def test_magnitude_output_shape_and_output_layout_fail_before_dispatch() -> None
         result = validate_and_dispatch(*values, CONTRACT, spy)
         assert_exact_contract_error(result, expected)
         assert spy.calls == 0
-        assert all(torch.equal(value, original) for value, original in zip(values, originals, strict=True))
+        assert_unchanged(values, originals)
 
 
 def test_input_and_output_aliases_stop_before_dispatch() -> None:
@@ -163,7 +168,7 @@ def test_input_and_output_aliases_stop_before_dispatch() -> None:
         result = validate_and_dispatch(*values, CONTRACT, spy)
         assert_exact_contract_error(result, expected)
         assert spy.calls == 0
-        assert all(torch.equal(value, original) for value, original in zip(values, originals, strict=True))
+        assert_unchanged(values, originals)
 
 
 def test_partial_input_storage_overlap_stops_before_dispatch() -> None:
@@ -178,7 +183,7 @@ def test_partial_input_storage_overlap_stops_before_dispatch() -> None:
     result = validate_and_dispatch(q, k, v, out, CONTRACT, spy)
     assert_exact_contract_error(result, "KERNEL-INPUT-OVERLAP")
     assert spy.calls == 0
-    assert all(torch.equal(value, original) for value, original in zip((q, k, v, out), originals, strict=True))
+    assert_unchanged((q, k, v, out), originals)
 
 
 def test_external_buffer_overlap_with_distinct_storage_bases_stops_before_dispatch() -> None:
@@ -198,7 +203,7 @@ def test_external_buffer_overlap_with_distinct_storage_bases_stops_before_dispat
         {"first_tensor": "q", "second_tensor": "k"},
     )
     assert spy.calls == 0
-    assert all(torch.equal(value, original) for value, original in zip((q, k, v, out), originals, strict=True))
+    assert_unchanged((q, k, v, out), originals)
 
 
 def test_opaque_and_lazy_negative_layouts_are_rejected_stably() -> None:
@@ -217,7 +222,7 @@ def test_opaque_and_lazy_negative_layouts_are_rejected_stably() -> None:
         assert spy.calls == 0
         observed = invalid.to_dense() if invalid.is_mkldnn else invalid
         assert torch.equal(observed, invalid_original)
-        assert all(torch.equal(value, original) for value, original in zip((k, v, out), originals, strict=True))
+        assert_unchanged((k, v, out), originals)
 
 
 def test_zero_stride_and_channels_last_like_layouts_are_rejected() -> None:
@@ -235,9 +240,7 @@ def test_zero_stride_and_channels_last_like_layouts_are_rejected() -> None:
             {"tensor": "q", "detected_strides": list(invalid.stride()), "required_layout": "BHSD-row-major"},
         )
         assert spy.calls == 0
-        assert all(
-            torch.equal(value, original) for value, original in zip((invalid, k, v, out), originals, strict=True)
-        )
+        assert_unchanged((invalid, k, v, out), originals)
 
 
 def test_non_tensor_is_rejected_as_unsupported_ownership() -> None:
@@ -265,7 +268,7 @@ def test_meta_device_is_rejected_before_dispatch() -> None:
         {"tensor": "q", "detected_device": "meta", "supported_device": "cpu"},
     )
     assert spy.calls == 0
-    assert all(torch.equal(value, original) for value, original in zip((k, v, out), originals, strict=True))
+    assert_unchanged((k, v, out), originals)
 
 
 def test_contract_digest_tampering_is_a_stable_authority_failure() -> None:
